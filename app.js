@@ -652,12 +652,16 @@ function renderListaJogadoresModal(lista) {
     });
 }
 
+function normalizarTexto(str) {
+    return str.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
 function filtrarJogadoresGol() {
-    const termo = document.getElementById('busca-jogador-gol').value.toLowerCase();
+    const termo = normalizarTexto(document.getElementById('busca-jogador-gol').value);
     const itens = document.querySelectorAll('.jogador-item-modal');
     
     itens.forEach(item => {
-        const nome = item.querySelector('.nome-jogador').innerText.toLowerCase();
+        const nome = normalizarTexto(item.querySelector('.nome-jogador').innerText);
         if (nome.includes(termo)) {
             item.style.display = 'flex';
         } else {
