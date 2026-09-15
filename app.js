@@ -55,6 +55,7 @@ let intervaloCronometro;
 
 let golsPartidaAtual = 0;
 let golsJogadorPartida = {};
+let golsFeedPartida = [];
 
 let wakeLock = null;
 
@@ -92,7 +93,8 @@ function salvarBackup() {
         timesSorteadosGlobal,
         tempoRestante,
         golsPartidaAtual,
-        golsJogadorPartida
+        golsJogadorPartida,
+        golsFeedPartida
     };
     localStorage.setItem('backupPelada', JSON.stringify(backup));
 }
@@ -108,6 +110,8 @@ function init() {
         tempoRestante = dados.tempoRestante !== undefined ? dados.tempoRestante : TEMPO_TOTAL;
         golsPartidaAtual = dados.golsPartidaAtual || 0;
         golsJogadorPartida = dados.golsJogadorPartida || {};
+        golsFeedPartida = dados.golsFeedPartida || [];
+        renderGolsPartida();
         
         if (timesSorteadosGlobal.length > 0) {
             document.getElementById('btn-sortear')?.classList.add('hidden');
@@ -596,6 +600,8 @@ function prepararNovoJogo() {
     
     golsPartidaAtual = 0;
     golsJogadorPartida = {};
+    golsFeedPartida = [];
+    renderGolsPartida();
     
     atualizarDisplayCronometro();
     
@@ -606,6 +612,40 @@ function prepararNovoJogo() {
     }
     
     salvarBackup();
+}
+
+function minutoGolAtual() {
+    const decorrido = Math.min(TEMPO_TOTAL, Math.max(0, TEMPO_TOTAL - tempoRestante));
+    const totalSegundos = Math.floor(decorrido);
+    const min = Math.floor(totalSegundos / 60);
+    const seg = totalSegundos % 60;
+    return `${String(min).padStart(2, '0')}:${String(seg).padStart(2, '0')}`;
+}
+
+function renderGolsPartida() {
+    const painel = document.getElementById('painel-gols-partida');
+    const feed = document.getElementById('feed-gols-partida');
+    if (!painel || !feed) return;
+
+    if (golsFeedPartida.length === 0) {
+        painel.classList.add('hidden');
+        feed.innerHTML = '';
+        return;
+    }
+
+    painel.classList.remove('hidden');
+    feed.innerHTML = '';
+
+    [...golsFeedPartida].reverse().forEach(gol => {
+        const item = document.createElement('div');
+        item.className = 'flex items-center gap-3 bg-black/40 border border-white/5 rounded p-2.5';
+        item.innerHTML = `
+            <img src="${gol.foto}" onerror="this.onerror=null; this.src=getAvatarUrl('${gol.nome}')" class="w-9 h-9 object-cover rounded-md bg-black/80 border border-white/10 shrink-0">
+            <span class="font-bold text-white truncate flex-grow">${gol.nome}</span>
+            <span class="led-text text-brand text-lg tabular-nums shrink-0">${gol.minuto}'</span>
+        `;
+        feed.appendChild(item);
+    });
 }
 
 function abrirModalGol() {
@@ -681,6 +721,15 @@ function registrarGol(jogadorId, jogadorNome) {
 
     golsPartidaAtual++;
     golsJogadorPartida[jogadorId] = golsAtuaisDesteJogador + 1;
+    
+    const jogador = jogadoresData.find(j => j.id === jogadorId);
+    golsFeedPartida.push({
+        id: jogadorId,
+        nome: jogadorNome,
+        foto: jogador ? jogador.foto : '',
+        minuto: minutoGolAtual()
+    });
+    renderGolsPartida();
     
     let artilharia = JSON.parse(localStorage.getItem('artilhariaPelada')) || {};
     
