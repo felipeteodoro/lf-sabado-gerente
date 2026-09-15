@@ -715,6 +715,10 @@ function fecharModalGol() {
     document.getElementById('modal-gol')?.classList.remove('flex');
 }
 
+// Vista atual da tab Artilharia ('hoje' = localStorage | 'geral' = servidor)
+let vistaArtilhariaAtual = 'hoje';
+let artilhariaGeralCache = null;
+
 function registrarGol(jogadorId, jogadorNome) {
     let golsAtuaisDesteJogador = golsJogadorPartida[jogadorId] || 0;
 
@@ -747,6 +751,7 @@ function registrarGol(jogadorId, jogadorNome) {
     fecharModalGol();
     salvarBackup();
     lfSyncRegistrarGol(jogadorId, jogadorNome, minutoGolAtual());
+    lfSyncInvalidarCacheGeral();
 
     if (golsJogadorPartida[jogadorId] >= 2) {
         finalizarPartidaTempo("Fim de Jogo");
@@ -760,13 +765,35 @@ function renderArtilharia() {
     if(!container) return;
     container.innerHTML = '';
     
+    // Vista "Geral": render assíncrono do acumulado do servidor
+    if (vistaArtilhariaAtual === 'geral') {
+        lfSyncArtilhariaGeral().then(dados => {
+            if (!dados) {
+                container.innerHTML = '<p class="text-center text-zinc-600 font-bold uppercase tracking-widest py-10">Artilharia geral precisa do Sync ativo.<br><span class="normal-case">Configure na aba Sync acima.</span></p>';
+                return;
+            }
+            if (dados.length === 0) {
+                container.innerHTML = '<p class="text-center text-zinc-600 font-bold uppercase tracking-widest py-10">Nenhum gol marcado ainda.</p>';
+                return;
+            }
+            renderListaArtilheiros(dados);
+        });
+        return;
+    }
+
     let artilharia = JSON.parse(localStorage.getItem('artilhariaPelada'));
     if (!artilharia || Object.keys(artilharia).length === 0) {
         container.innerHTML = '<p class="text-center text-zinc-600 font-bold uppercase tracking-widest py-10">Nenhum gol marcado ainda.</p>';
         return;
     }
 
-    let arrayArtilheiros = Object.values(artilharia).sort((a, b) => b.gols - a.gols);
+    renderListaArtilheiros(Object.values(artilharia).sort((a, b) => b.gols - a.gols));
+}
+
+// Render comum das duas vistas: array de {nome, gols, foto?}
+function renderListaArtilheiros(arrayArtilheiros) {
+    const container = document.getElementById('lista-artilheiros');
+    if(!container) return;
     let posicoes = [...new Set(arrayArtilheiros.map(j => j.gols))];
 
     arrayArtilheiros.forEach((jogador) => {
@@ -1001,3 +1028,45 @@ async function lfSyncRegistrarGol(jogadorId, jogadorNome, minuto) {
 
 // Ao abrir o app com sync ativo, puxa a artilharia acumulada do servidor
 lfSyncCarregarArtilharia();
+
+// ============================================================
+// VISTA ARtilHARIA: HOJE vs GERAL (estado declarado antes de registrarGol)
+// "Hoje" = artilhariaPelada do localStorage (reset à meia-noite, como sempre foi)
+// "Geral" = acumulado do servidor (via sync) — intocável pela UI,
+//           o botão Zerar continua zerando só o dia
+function alternarVistaArtilharia(vista) {
+    vistaArtilhariaAtual = vista;
+    const btnHoje = document.getElementById('btn-artilharia-hoje');
+    const btnGeral = document.getElementById('btn-artilharia-geral');
+    if (btnHoje && btnGeral) {
+        const ativo = 'text-xs uppercase tracking-wider px-5 py-2 font-bold bg-[var(--c-brand)] text-white';
+        const inativo = 'text-xs uppercase tracking-wider px-5 py-2 font-bold bg-black/40 text-zinc-400 hover:bg-white/10';
+        btnHoje.className = vista === 'hoje' ? ativo : inativo;
+        btnGeral.className = vista === 'geral' ? ativo : inativo;
+    }
+    renderArtilharia();
+}
+
+// Busca o acumulado do servidor (cache simples pra não bater a API a cada render)
+async function lfSyncArtilhariaGeral() {
+    if (!lfSyncAtivo()) return null;
+    if (artilhariaGeralCache) return artilhariaGeralCache;
+    const url = localStorage.getItem(LF_SYNC_ENDPOINT_KEY);
+    try {
+        const resp = await fetch(url + '/estado');
+        const dados = await resp.json();
+        if (!dados.ok) return null;
+        artilhariaGeralCache = (dados.artilharia || [])
+            .filter(a => a.gols > 0)
+            .map(a => ({ nome: a.nome, gols: a.gols }));
+        return artilhariaGeralCache;
+    } catch (err) {
+        return null;
+    }
+}
+
+// Invalida o cache quando um gol novo pode ter mudado o geral
+function lfSyncInvalidarCacheGeral() {
+    artilhariaGeralCache = null;
+    if (vistaArtilhariaAtual === 'geral') renderArtilharia();
+}
