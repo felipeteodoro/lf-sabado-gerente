@@ -17,7 +17,21 @@ Este projeto foi construído focando na resolução de problemas reais de uso de
 * **API Screen Wake Lock:** Integração com a API nativa do navegador para evitar que a tela do dispositivo bloqueie ou desligue enquanto o cronômetro da partida estiver em andamento.
 * **Gestão Dinâmica de Equipes:** Regras de negócio flexíveis que permitem adicionar "atrasildos" (jogadores que chegam após o sorteio) diretamente para a fila, além de substituições manuais avançadas nos times já formados.
 * **Integração e Compartilhamento:** Uso da `clipboard API` para gerar e exportar relatórios formatados (escalações e documentação de artilharia) diretamente para o WhatsApp.
+* **Sincronização Opcional com Servidor Próprio:** Camada de sync *opt-in* para manter um histórico acumulado de artilharia em um backend próprio (Express + SQLite, self-hosted). Desligada por padrão — sem endpoint configurado, o app funciona 100% offline como sempre. Sem rede, os envios enfileiram no `localStorage` e sincronizam sozinhos quando a conexão volta.
+* **Artilharia Hoje/Geral:** Toggle na tab Artilharia — "Hoje" mostra os gols do dia (do `localStorage`, reset à meia-noite) e "Geral" o acumulado histórico do servidor (quando o Sync está ativo). O botão Zerar afeta apenas o dia; o histórico geral é intocável pela UI.
 * **PWA Completo:** Arquitetura Progressive Web App configurada com `manifest.json`, Service Workers (`sw.js`) com injeção de cache e banner de instalação nativo, permitindo o funcionamento 100% offline.
+
+---
+
+## 🧪 Testes
+
+Suite com `node:test` (built-in do Node 18+, zero dependências — o repo não tem `package.json` por design). Os testes carregam o `app.js` real num sandbox `vm` com `localStorage`/`fetch`/DOM mockados:
+
+```bash
+node --test tests/sync.test.mjs
+```
+
+Cobrem a camada de sincronização (sync desligado não faz fetch, offline enfileira, flush esvazia, hidratação só sobe totais, diacríticos preservados) e as vistas Hoje/Geral.
 
 ---
 

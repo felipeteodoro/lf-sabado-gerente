@@ -6,7 +6,7 @@ Você é um agent de coding (Copilot em code review, Codespaces ou edição inli
 
 - **O que é**: PWA de gestão de futebol amador (substitui o "caderninho" da pelada de sábado)
 - **Stack**: HTML5 semântico + Tailwind CSS (CDN) + JavaScript vanilla ES6+ — **zero build step, zero dependência de pacote**
-- **Estado**: vive em `localStorage` (backup "anti-zumbi") — **não há backend**
+- **Estado**: vive em `localStorage` (backup "anti-zumbi"). **Backend é OPCIONAL** (sync opt-in, ver abaixo)
 - **Deploy**: GitHub Pages a partir de `main`
 - **Mobile-first**: projetado pra rodar em celular à beira da quadra, com sol e pressa
 
@@ -14,14 +14,29 @@ Você é um agent de coding (Copilot em code review, Codespaces ou edição inli
 
 ```
 index.html          # Markup principal (3 tabs: Sorteio / Partida / Artilharia)
-app.js              # Toda a lógica (~870 linhas, vanilla JS, sem módulos)
+app.js              # Toda a lógica (vanilla JS, sem módulos) — inclui a camada lfSync* no final
 style.css           # Ajustes finos sobre Tailwind
 manifest.json       # PWA manifest
 sw.js               # Service worker (cache-first, offline-first)
 fotos/              # Fotos dos jogadores (fallback via getAvatarUrl)
+tests/              # node:test (built-in, zero dependência) — ver "Como testar"
 ```
 
-Não tem `package.json`, não tem bundler, não tem testes automatizados além dos que o contributor escrever. **Adicionar uma dependência nova é uma decisão grande** — pense duas vezes.
+Não tem `package.json`, não tem bundler. **Adicionar uma dependência nova é uma decisão grande** — pense duas vezes.
+
+## Sincronização opcional (camada lfSync*) — leia antes de mexer na artilharia
+
+O app tem uma camada de sync **opt-in** com um backend próprio (Express + SQLite, self-hosted, ex.: `https://lf.felipeteodoro.dev`):
+
+- **Desligada por padrão**: sem `lfSyncEndpoint` no `localStorage`, **nenhum** fetch é feito — o app é 100% offline, comportamento original.
+- **Ligada** (botão Sync na tab Artilharia): gols vão pro servidor (`POST /gols`), e a vista "Geral" mostra o acumulado histórico (`GET /estado`, campo `artilharia`).
+- **Offline-first preservado**: falha de rede enfileira em `lfSyncFila` no `localStorage`; o evento `online` dispara o flush.
+- **Vistas Hoje/Geral**: `vistaArtilhariaAtual` ('hoje'|'geral'). "Hoje" = `artilhariaPelada` local (reset à meia-noite). "Geral" = servidor com cache (`artilhariaGeralCache`) invalidado a cada gol.
+- **Regra de ouro**: o botão Zerar afeta SÓ o dia. O geral é intocável pela UI.
+- **Hidratação** (`lfSyncCarregarArtilharia`): totais do servidor só SUBEM os valores locais, nunca descem.
+- **Endpoint precisa ser `https://`** (PWA roda em GitHub Pages; `http://` é mixed content e o `lfSyncConfigurar` rejeita).
+
+Convenções da camada: funções prefixadas `lfSync*`, estado novo vai em chaves `lfSync*` do `localStorage` (`lfSyncEndpoint`, `lfSyncPartidaId`, `lfSyncFila`).
 
 ## Convenções do código
 
@@ -66,7 +81,15 @@ python3 -m http.server 8080
 # então http://localhost:8080
 ```
 
-Não há test runner instalado. Pra validar interações de DOM, use Chrome headless ou similar — descreva o que testou na descrição do PR.
+**Testes automatizados** (`node:test`, built-in do Node 18+, zero dependência):
+
+```bash
+node --test tests/sync.test.mjs
+```
+
+Cobrem sync desligado (nenhum fetch), online (gol vai pros dois lados), offline (fila + flush), hidratação (só sobe totais, diacríticos), config (rejeita `http://`) e as vistas Hoje/Geral. Rodam o `app.js` real num sandbox `vm` com `localStorage`/`fetch`/DOM mockados — se mudar comportamento da camada lfSync*, atualize os testes no mesmo PR.
+
+Pra validar interações visuais de DOM, use Chrome headless (puppeteer) — descreva o que testou na descrição do PR.
 
 ## Como contribuir (PRs)
 
