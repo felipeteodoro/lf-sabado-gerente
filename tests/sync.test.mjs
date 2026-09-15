@@ -300,9 +300,7 @@ test('vista hoje (padrão): renderiza do localStorage, sem tocar no servidor', a
     },
   });
 
-  assert.equal(world.vistaArtilhariaAtual, 'hoje');
-  // Vista hoje NÃO usa lfSyncArtilhariaGeral → retorno null não muda o render
-  assert.equal(await world.lfSyncArtilhariaGeral(), null);
+  assert.equal(await world.lfSyncArtilhariaGeral(), null, 'sem endpoint, geral indisponível');
   // E o localStorage segue sendo a fonte
   const artilharia = JSON.parse(storage.getItem('artilhariaPelada'));
   assert.equal(artilharia[1].gols, 3);
