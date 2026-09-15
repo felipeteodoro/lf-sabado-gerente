@@ -102,6 +102,8 @@ const ESTADO_OK = (artilharia = []) => ({
   jogadores: [],
   gols: [],
   artilharia,
+  // Hidratação do boot usa a do dia; por padrão os testes tratam como mesma
+  artilharia_hoje: artilharia,
 });
 
 const jsonResp = (obj) => ({
