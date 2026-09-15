@@ -69,6 +69,7 @@ function carregarApp({ fetchImpl, storageInitial = {} } = {}) {
     console: { log() {}, error() {} },
     alert: (msg) => { world._alerts.push(String(msg)); },
     prompt: () => null,
+    confirm: () => true,
     fetch: async (url, opts) => {
       fetchCalls.push({ url: String(url), opts });
       return fetchImpl ? fetchImpl(String(url), opts) : new Response('{}');
@@ -288,4 +289,68 @@ test('config: rejeita endpoint http:// (PWA é https, mixed content é bloqueado
   // Vazio desliga
   world.lfSyncConfigurar('');
   assert.equal(world.lfSyncAtivo(), false);
+});
+
+// --- Vista Hoje/Geral (PR artilharia-hoje-geral) ----------------------
+
+test('vista hoje (padrão): renderiza do localStorage, sem tocar no servidor', async () => {
+  const { world, storage } = carregarApp({
+    storageInitial: {
+      artilhariaPelada: JSON.stringify({ 1: { nome: 'Râneer', gols: 3, foto: '' } }),
+    },
+  });
+
+  assert.equal(await world.lfSyncArtilhariaGeral(), null, 'sem endpoint, geral indisponível');
+  // E o localStorage segue sendo a fonte
+  const artilharia = JSON.parse(storage.getItem('artilhariaPelada'));
+  assert.equal(artilharia[1].gols, 3);
+});
+
+test('vista geral: dados vêm do servidor, Zerar não afeta o geral', async () => {
+  const { world, storage } = carregarApp({
+    storageInitial: {
+      lfSyncEndpoint: 'https://lf.exemplo.dev',
+      artilhariaPelada: JSON.stringify({ 1: { nome: 'Râneer', gols: 2, foto: '' } }),
+    },
+    fetchImpl: async () => jsonResp(ESTADO_OK([
+      { id: '1', nome: 'Râneer', posicao: 'linha', gols: 18 },
+      { id: '22', nome: 'Felipe Sha.', posicao: 'linha', gols: 16 },
+      { id: '9', nome: 'Christiano', posicao: 'goleiro', gols: 0 },
+    ])),
+  });
+
+  const geral = await world.lfSyncArtilhariaGeral();
+  assert.equal(geral.length, 2, 'jogadores com 0 gols ficam de fora do geral');
+  assert.equal(geral[0].nome, 'Râneer');
+  assert.equal(geral[0].gols, 18);
+
+  // Cache: segunda chamada não refaz o fetch (contado no fetchCalls do boot)
+  const { fetchCalls } = { fetchCalls: [] }; // proxy já contou; só valida o cache
+  const deNovo = await world.lfSyncArtilhariaGeral();
+  assert.equal(deNovo, geral, 'segunda leitura usa o cache');
+
+  // Zerar afeta só o dia (localStorage), o geral vem do servidor e não muda
+  world.zerarArtilharia();
+  assert.equal(storage.getItem('artilhariaPelada'), null);
+  const geralAposZerar = await world.lfSyncArtilhariaGeral();
+  assert.equal(geralAposZerar[0].gols, 18, 'geral intacto após Zerar');
+});
+
+test('invalidar cache do geral: próximo gol re-busca o geral do servidor', async () => {
+  let chamadas = 0;
+  const { world } = carregarApp({
+    storageInitial: { lfSyncEndpoint: 'https://lf.exemplo.dev' },
+    fetchImpl: async () => {
+      chamadas++;
+      return jsonResp(ESTADO_OK([{ id: '1', nome: 'Râneer', posicao: 'linha', gols: chamadas }]));
+    },
+  });
+
+  await world.lfSyncArtilhariaGeral(); // 1º fetch (boot hidrata + 1ª chamada)
+  const antes = (await world.lfSyncArtilhariaGeral()).find(a => a.nome === 'Râneer').gols;
+
+  world.lfSyncInvalidarCacheGeral(); // gol novo → cache fora
+  const depois = (await world.lfSyncArtilhariaGeral()).find(a => a.nome === 'Râneer').gols;
+
+  assert.ok(depois > antes, 'após invalidar, re-busca do servidor (valor muda)');
 });
