@@ -746,6 +746,7 @@ function registrarGol(jogadorId, jogadorNome) {
     localStorage.setItem('artilhariaPelada', JSON.stringify(artilharia));
     fecharModalGol();
     salvarBackup();
+    lfSyncRegistrarGol(jogadorId, jogadorNome, minutoGolAtual());
 
     if (golsJogadorPartida[jogadorId] >= 2) {
         finalizarPartidaTempo("Fim de Jogo");
@@ -869,3 +870,134 @@ setTimeout(() => {
 
 // Inicia o app direto, sem esperar as imagens carregarem
 init();
+// ============================================================
+// SINCRONIZAÇÃO OPCIONAL COM BACKEND (LF Gerente API)
+// Liga/desliga nas Configurações do app. Desligado por padrão —
+// sem endpoint configurado, o app funciona 100% como antes.
+// localStorage continua sendo a fonte da verdade offline.
+// ============================================================
+const LF_SYNC_ENDPOINT_KEY = 'lfSyncEndpoint';
+let lfSyncFila = JSON.parse(localStorage.getItem('lfSyncFila') || '[]');
+
+function lfSyncAtivo() {
+    const url = localStorage.getItem(LF_SYNC_ENDPOINT_KEY);
+    return !!url && url.startsWith('https://');
+}
+
+function lfSyncConfigurar(url) {
+    if (url && !url.startsWith('https://')) {
+        alert('O endpoint de sincronização precisa ser https://');
+        return false;
+    }
+    if (url) localStorage.setItem(LF_SYNC_ENDPOINT_KEY, url);
+    else localStorage.removeItem(LF_SYNC_ENDPOINT_KEY);
+    return true;
+}
+
+async function lfSyncEnviar(path, body) {
+    if (!lfSyncAtivo()) return;
+    const url = localStorage.getItem(LF_SYNC_ENDPOINT_KEY);
+    try {
+        await fetch(url + path, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+    } catch (err) {
+        // Offline: enfileira pra sincronizar depois
+        lfSyncFila.push({ path, body });
+        localStorage.setItem('lfSyncFila', JSON.stringify(lfSyncFila));
+    }
+}
+
+async function lfSyncFlush() {
+    if (!lfSyncAtivo() || lfSyncFila.length === 0) return;
+    const url = localStorage.getItem(LF_SYNC_ENDPOINT_KEY);
+    const restantes = [];
+    for (const item of lfSyncFila) {
+        try {
+            await fetch(url + item.path, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(item.body)
+            });
+        } catch (err) {
+            restantes.push(item);
+        }
+    }
+    lfSyncFila = restantes;
+    localStorage.setItem('lfSyncFila', JSON.stringify(lfSyncFila));
+}
+
+// Hidrata a artilharia acumulada do servidor ao abrir o app
+async function lfSyncCarregarArtilharia() {
+    if (!lfSyncAtivo()) return;
+    const url = localStorage.getItem(LF_SYNC_ENDPOINT_KEY);
+    try {
+        const resp = await fetch(url + '/estado');
+        const dados = await resp.json();
+        if (!dados.ok) return;
+        const local = JSON.parse(localStorage.getItem('artilhariaPelada')) || {};
+        for (const a of (dados.artilharia || [])) {
+            const idNum = parseInt(a.id, 10);
+            if (!idNum || isNaN(idNum)) continue;
+            const existente = local[idNum];
+            if (!existente || existente.gols < a.gols) {
+                const jogador = jogadoresData.find(j => j.id === idNum);
+                local[idNum] = { nome: a.nome, gols: a.gols, foto: jogador ? jogador.foto : '' };
+            }
+        }
+        localStorage.setItem('artilhariaPelada', JSON.stringify(local));
+        renderArtilharia();
+    } catch (err) {
+        // Offline: segue com o localStorage local, sem erro
+    }
+}
+
+window.addEventListener('online', lfSyncFlush);
+
+// === Config do sync via prompt simples (sem dependência de UI nova) ===
+function lfSyncToggleConfig() {
+    const atual = localStorage.getItem(LF_SYNC_ENDPOINT_KEY) || 'https://lf.felipeteodoro.dev';
+    const url = prompt(
+        'Sincronização de artilharia com servidor próprio.\n\n' +
+        'Público (Cloudflare Tunnel): https://lf.felipeteodoro.dev\n' +
+        'Local (sem internet):       http://192.168.31.221:8887\n\n' +
+        'Cole a URL https:// do servidor (vazio = desligar):',
+        atual
+    );
+    if (url === null) return; // cancelou
+    const limpo = url.trim().replace(/\/+$/, '');
+    if (lfSyncConfigurar(limpo)) {
+        if (lfSyncAtivo()) {
+            alert('Sync ativado: ' + limpo);
+            lfSyncCarregarArtilharia();
+        } else {
+            alert('Sync desligado. O app continua 100% offline como antes.');
+        }
+    }
+}
+
+// Envia gol ao backend; cria a partida no servidor se ainda não existe
+async function lfSyncRegistrarGol(jogadorId, jogadorNome, minuto) {
+    if (!lfSyncAtivo()) return;
+    const url = localStorage.getItem(LF_SYNC_ENDPOINT_KEY);
+    let partidaId = localStorage.getItem('lfSyncPartidaId');
+    try {
+        if (!partidaId) {
+            const resp = await fetch(url + '/partidas', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+            const dados = await resp.json();
+            if (!dados.ok) return;
+            partidaId = String(dados.partida.id);
+            localStorage.setItem('lfSyncPartidaId', partidaId);
+        }
+        await lfSyncEnviar('/gols', { partida_id: Number(partidaId), jogador_id: String(jogadorId), time: 'time1', minuto });
+        // Garante que o jogador existe no servidor (id numérico do app)
+        await lfSyncEnviar('/jogadores', { id: String(jogadorId), nome: jogadorNome });
+    } catch (err) {
+        // Offline: a fila do lfSyncEnviar cobre; criação de partida tenta de novo no próximo gol
+    }
+}
+
+// Ao abrir o app com sync ativo, puxa a artilharia acumulada do servidor
+lfSyncCarregarArtilharia();
