@@ -965,7 +965,9 @@ async function lfSyncCarregarArtilharia() {
         const dados = await resp.json();
         if (!dados.ok) return;
         const local = JSON.parse(localStorage.getItem('artilhariaPelada')) || {};
-        for (const a of (dados.artilharia || [])) {
+        // Hidrata com a artilharia DO DIA (artilharia_hoje), não a global —
+        // a vista "Geral" já é servida à parte em lfSyncArtilhariaGeral().
+        for (const a of (dados.artilharia_hoje || [])) {
             const idNum = parseInt(a.id, 10);
             if (!idNum || isNaN(idNum)) continue;
             const existente = local[idNum];
@@ -1058,7 +1060,12 @@ async function lfSyncArtilhariaGeral() {
         if (!dados.ok) return null;
         artilhariaGeralCache = (dados.artilharia || [])
             .filter(a => a.gols > 0)
-            .map(a => ({ nome: a.nome, gols: a.gols }));
+            .map(a => {
+                // Foto: prioriza a.foto do servidor; fallback no jogador local
+                const idNum = parseInt(a.id, 10);
+                const jogador = jogadoresData.find(j => j.id === idNum);
+                return { nome: a.nome, gols: a.gols, foto: a.foto || (jogador ? jogador.foto : '') };
+            });
         return artilhariaGeralCache;
     } catch (err) {
         return null;
