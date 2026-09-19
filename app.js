@@ -43,7 +43,9 @@ let jogadoresData = [
     { id: 42, nome: "Vitor Hug.", posicao: "linha", presente: false, foto: "fotos/vitor_hug.jpg" },
     { id: 43, nome: "Mattheus", posicao: "linha", presente: false, foto: "fotos/mattheus.jpg" },
     { id: 44, nome: "Wesley Teo.", posicao: "linha", presente: false, foto: "fotos/wesley_teo.jpg" },
-    { id: 45, nome: "Miné", posicao: "linha", presente: false, foto: "fotos/mine.jpg" }
+    { id: 45, nome: "Miné", posicao: "linha", presente: false, foto: "fotos/mine.jpg" },
+    { id: 103, nome: "Túlio Mor.", posicao: "linha", presente: false, foto: "fotos/tulio_mor.jpg" },
+    { id: 104, nome: "Yuri Vit.", posicao: "linha", presente: false, foto: "fotos/yuri_vit.jpg" }
 ];
 
 let timesSorteadosGlobal = [];
