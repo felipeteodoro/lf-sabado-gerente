@@ -897,6 +897,57 @@ setTimeout(() => {
 
 // Inicia o app direto, sem esperar as imagens carregarem
 init();
+
+// ============================================================
+// BANNER DE INSTALAÇÃO (PWA)
+// Mostra "Instalar App Oficial" no topo enquanto o usuário não
+// instalou (nem criou atalho) — como no design original do projeto.
+// ============================================================
+let deferredInstallPrompt = null;
+
+function instaladoOuAtalho() {
+    return window.matchMedia('(display-mode: standalone)').matches
+        || window.navigator.standalone === true          // iOS Safari
+        || window.matchMedia('(display-mode: standalone-ios)').matches
+        || document.referrer.includes('android-app://');  // aberto pelo atalho/instalado
+}
+
+function mostrarBannerInstall() {
+    const banner = document.getElementById('install-banner');
+    if (!banner || instaladoOuAtalho()) return;
+    banner.classList.remove('hidden');
+}
+
+function fecharBannerInstall() {
+    const banner = document.getElementById('install-banner');
+    if (banner) banner.classList.add('hidden');
+    // Não guarda "não mostrar mais": quem acessa por link sempre vê —
+    // era a intenção desde o começo do projeto.
+}
+
+window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredInstallPrompt = e;
+    mostrarBannerInstall();
+});
+
+document.getElementById('btn-install')?.addEventListener('click', async () => {
+    if (deferredInstallPrompt) {
+        // Android/Chrome: fluxo nativo de instalação
+        deferredInstallPrompt.prompt();
+        const escolha = await deferredInstallPrompt.userChoice;
+        if (escolha.outcome === 'accepted') fecharBannerInstall();
+        deferredInstallPrompt = null;
+    } else {
+        // iOS Safari não tem beforeinstallprompt: instrui o Adicionar à Tela de Início
+        alert('No iPhone: toque no botão Compartilhar (quadrado com seta pra cima) e depois em "Adicionar à Tela de Início".');
+    }
+});
+
+// Fallback: se o navegador não disparar beforeinstallprompt (iOS, alguns browsers),
+// o banner aparece mesmo assim após o splash — usuário não-instalado sempre vê.
+setTimeout(mostrarBannerInstall, 2600);
+
 // ============================================================
 // SINCRONIZAÇÃO OPCIONAL COM BACKEND (LF Gerente API)
 // Liga/desliga nas Configurações do app. Desligado por padrão —
