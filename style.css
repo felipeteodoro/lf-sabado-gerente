@@ -95,3 +95,27 @@ body {
     100% { opacity: 1; transform: translateY(0); }
 }
 .animar-texto { animation: textoSubindo 0.6s ease-out forwards; animation-delay: 0.2s; opacity: 0; }
+/* ============================================================
+   iOS webapp: safe areas + guard de hidden
+   viewport-fit=cover já está no meta; aqui respeitamos os insets
+   do notch / home indicator e garantimos que [hidden] vence
+   qualquer display:flex (bug clássico de WebKit: classe com
+   display:flex sobrescreve o atributo hidden e a "tab some" —
+   na real ela fica renderizando por baixo).
+   ============================================================ */
+
+/* padding inferior do corpo p/ home indicator quando standalone */
+@supports (padding: env(safe-area-inset-bottom)) {
+    body {
+        padding-bottom: env(safe-area-inset-bottom);
+    }
+    /* nav inferior fixa precisa subir o home indicator */
+    nav[class*="fixed"], .nav-inferior {
+        padding-bottom: calc(env(safe-area-inset-bottom) + 0.5rem);
+    }
+}
+
+/* hidden vence display:flex/inline-flex de qualquer classe */
+[hidden] {
+    display: none !important;
+}

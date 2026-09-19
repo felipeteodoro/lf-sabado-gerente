@@ -1,4 +1,4 @@
-const CACHE_NAME = 'lf-turma-sabado-v20';
+const CACHE_NAME = 'lf-turma-sabado-v21';
 
 // Arquivos que o app precisa baixar na primeira vez para funcionar offline
 const urlsToCache = [
@@ -8,6 +8,7 @@ const urlsToCache = [
     './app.js',
     './manifest.json',
     './fotos/logo.png',
+    './fotos/apple-touch-icon.png',
     './audios/apito.mp3',
     './audios/sorteio.mp3'
 ];
