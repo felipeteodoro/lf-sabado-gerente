@@ -124,6 +124,9 @@ body {
    Espaço para a nav inferior fixa: sem isso o último item da
    lista de artilharia fica embaixo da barra e cortado.
    ============================================================ */
+/* padding-bottom com !important: o Tailwind CDN injeta o <style> DEPOIS
+   do style.css no <head>, então o py-6 dos mains venceria na cascata
+   normal e o último item voltaria pra baixo da nav (bug do PR #16). */
 main {
-    padding-bottom: 5.5rem;
+    padding-bottom: 5.5rem !important;
 }
