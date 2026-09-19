@@ -119,3 +119,11 @@ body {
 [hidden] {
     display: none !important;
 }
+
+/* ============================================================
+   Espaço para a nav inferior fixa: sem isso o último item da
+   lista de artilharia fica embaixo da barra e cortado.
+   ============================================================ */
+main {
+    padding-bottom: 5.5rem;
+}
