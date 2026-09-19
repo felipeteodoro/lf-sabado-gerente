@@ -1,4 +1,4 @@
-const CACHE_NAME = 'lf-turma-sabado-v24';
+const CACHE_NAME = 'lf-turma-sabado-v25';
 
 // Arquivos que o app precisa baixar na primeira vez para funcionar offline
 const urlsToCache = [
@@ -13,14 +13,30 @@ const urlsToCache = [
     './audios/sorteio.mp3'
 ];
 
-// Instalação do Service Worker e cache inicial
+// Instalação: baixa tudo e ATIVA na hora — sem esperar as abas fecharem.
+// É isso que faz a atualização chegar sem precisar desinstalar/limpar cache.
 self.addEventListener('install', event => {
+    self.skipWaiting();
     event.waitUntil(
         caches.open(CACHE_NAME)
             .then(cache => {
                 return cache.addAll(urlsToCache);
             })
     );
+});
+
+// Ativação: assume o controle das abas abertas e limpa caches antigos
+self.addEventListener('activate', event => {
+    event.waitUntil((async () => {
+        if (self.registration.navigationPreload) {
+            try { await self.registration.navigationPreload.disable(); } catch (e) {}
+        }
+        const keys = await caches.keys();
+        await Promise.all(keys.map(key => {
+            if (key !== CACHE_NAME) return caches.delete(key);
+        }));
+        await self.clients.claim();
+    })());
 });
 
 // Intercepta as requisições: tenta pegar do cache, se não tiver, pega da rede e já salva no cache
