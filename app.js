@@ -1038,6 +1038,37 @@ async function lfSyncCarregarArtilharia() {
 
 window.addEventListener('online', lfSyncFlush);
 
+// === Multi-aparelho: mantém o DIA atualizado em todos os celulares ===
+// O gol já vai pro servidor na hora que é marcado; o que faltava era o
+// OUTRO aparelho puxar os gols do dia sem precisar fechar e abrir o app.
+// Estratégia leve (sem websocket, sem dependência):
+//   1. Poll a cada 30s quando o app está visível (aba aberta em uso)
+//   2. Refresh imediato ao voltar pro app (visibilitychange) ou à rede
+// A hidratação existente só SOBE valores (nunca desce), então dois
+// aparelhos marcando gols ao vivo convergem no total do servidor.
+
+const LF_SYNC_POLL_MS = 30000;
+let lfSyncPollTimer = null;
+
+function lfSyncIniciarPoll() {
+    if (!lfSyncAtivo() || lfSyncPollTimer) return;
+    lfSyncPollTimer = setInterval(() => {
+        if (document.visibilityState === 'visible') {
+            lfSyncCarregarArtilharia();
+        }
+    }, LF_SYNC_POLL_MS);
+}
+
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && lfSyncAtivo()) {
+        lfSyncFlush();
+        lfSyncCarregarArtilharia();
+        lfSyncIniciarPoll();
+    }
+});
+
+lfSyncIniciarPoll();
+
 // === Config do sync via prompt simples (sem dependência de UI nova) ===
 function lfSyncToggleConfig() {
     const atual = localStorage.getItem(LF_SYNC_ENDPOINT_KEY) || 'https://lf.felipeteodoro.dev';
@@ -1054,6 +1085,7 @@ function lfSyncToggleConfig() {
         if (lfSyncAtivo()) {
             alert('Sync ativado: ' + limpo);
             lfSyncCarregarArtilharia();
+            lfSyncIniciarPoll(); // multi-aparelho: começa a puxar o dia
         } else {
             alert('Sync desligado. O app continua 100% offline como antes.');
         }

@@ -75,7 +75,7 @@ function carregarApp({ fetchImpl, storageInitial = {} } = {}) {
       return fetchImpl ? fetchImpl(String(url), opts) : new Response('{}');
     },
     setTimeout: () => 0,
-    setInterval: () => 0,
+    setInterval: (fn, ms) => { world._intervals.push({ fn, ms }); return world._intervals.length; },
     clearInterval() {},
     localStorage: storage,
     navigator: {},
@@ -87,6 +87,7 @@ function carregarApp({ fetchImpl, storageInitial = {} } = {}) {
       visibilityState: 'visible',
     },
     _alerts: [],
+    _intervals: [],
   };
   world.window = {
     addEventListener: (ev, fn) => { (windowHandlers[ev] ||= []).push(fn); },
@@ -355,4 +356,23 @@ test('invalidar cache do geral: próximo gol re-busca o geral do servidor', asyn
   const depois = (await world.lfSyncArtilhariaGeral()).find(a => a.nome === 'Râneer').gols;
 
   assert.ok(depois > antes, 'após invalidar, re-busca do servidor (valor muda)');
+});
+
+// --- Multi-aparelho: poll do dia ----------------------------------------
+
+test('poll multi-device inicia com sync ativo (boot) e nao duplica', async () => {
+  const { world } = carregarApp({
+    storageInitial: { lfSyncEndpoint: 'https://lf.example.com' },
+  });
+  assert.ok(world._intervals.length >= 1, 'poll timer criado no boot');
+  world.lfSyncIniciarPoll(); // idempotente
+  assert.equal(world._intervals.length, 1, 'sem timer duplicado');
+  // o timer cadastrado é o de 30s do poll
+  assert.equal(world._intervals[0].ms, 30000);
+});
+
+test('poll NAO inicia com sync desligado', async () => {
+  const { world } = carregarApp();
+  world.lfSyncIniciarPoll();
+  assert.equal(world._intervals.length, 0, 'nenhum timer sem endpoint');
 });
