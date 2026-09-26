@@ -2,7 +2,7 @@ let jogadoresData = [
     { id: 1, nome: "Râneer", posicao: "linha", presente: false, foto: "fotos/raneer.jpg" },
     { id: 2, nome: "Alex Vie.", posicao: "linha", presente: false, foto: "fotos/alex_vie.jpg" },
     { id: 3, nome: "Kaique Fer.", posicao: "linha", presente: false, foto: "fotos/kaique_fer.jpg" },
-    { id: 4, nome: "Eduardo Bol.", posicao: "linha", presente: false, foto: "fotos/eduardo_bol.jpg" },
+    { id: 4, nome: "Eduardo Bolívia", posicao: "linha", presente: false, foto: "fotos/eduardo_bol.jpg" },
     { id: 5, nome: "Michel", posicao: "goleiro", presente: false, foto: "fotos/michel.jpg" },
     { id: 6, nome: "Kaique Mar.", posicao: "linha", presente: false, foto: "fotos/kaique_mar.jpg" },
     { id: 7, nome: "Pé de Pano", posicao: "linha", presente: false, foto: "fotos/pe_de_pano.jpg" },
