@@ -90,6 +90,7 @@ function carregarApp({ fetchImpl, storageInitial = {} } = {}) {
   };
   world.window = {
     addEventListener: (ev, fn) => { (windowHandlers[ev] ||= []).push(fn); },
+    scrollTo() {},
   };
   const context = vm.createContext(world);
   vm.runInContext(APP_JS, context, { filename: 'app.js' });
@@ -355,4 +356,42 @@ test('invalidar cache do geral: próximo gol re-busca o geral do servidor', asyn
   const depois = (await world.lfSyncArtilhariaGeral()).find(a => a.nome === 'Râneer').gols;
 
   assert.ok(depois > antes, 'após invalidar, re-busca do servidor (valor muda)');
+});
+
+// --- Presenças: sorteio registra quem compareceu -----------------------
+
+const JOGADORES_SORTEIO = [
+  { id: 1, nome: 'Râneer', posicao: 'linha', presente: true },
+  { id: 2, nome: 'Alex', posicao: 'linha', presente: true },
+  { id: 5, nome: 'Michel', posicao: 'goleiro', presente: true },
+  { id: 8, nome: 'Vitorino', posicao: 'goleiro', presente: true },
+  { id: 7, nome: 'Pé de Pano', posicao: 'linha', presente: true },
+];
+
+test('sorteio com sync ativo envia presencas dos sorteados ao servidor', async () => {
+  const { world, fetchCalls } = carregarApp({
+    storageInitial: { lfSyncEndpoint: 'https://lf.example.com' },
+  });
+  // boot dispara hidratação; zera a contagem pra olhar só o sorteio
+  fetchCalls.length = 0;
+
+  world.sortearImparcial(JOGADORES_SORTEIO);
+  await new Promise((r) => setTimeout(r, 0)); // lfSyncEnviar é async
+
+  const presenca = fetchCalls.find((c) => String(c.url).endsWith('/presencas'));
+  assert.ok(presenca, 'POST /presencas disparado');
+  const body = JSON.parse(presenca.opts.body);
+  assert.equal(body.jogadores_ids.length, 5, 'todos os sorteados marcados');
+  assert.equal(new Set(body.jogadores_ids).size, 5, 'IDs únicos');
+});
+
+test('sorteio com sync desligado NÃO envia presencas', async () => {
+  const { world, fetchCalls } = carregarApp();
+  fetchCalls.length = 0;
+
+  world.sortearImparcial(JOGADORES_SORTEIO);
+  await new Promise((r) => setTimeout(r, 0));
+
+  const presenca = fetchCalls.find((c) => String(c.url).endsWith('/presencas'));
+  assert.equal(presenca, undefined, 'nenhum POST /presencas');
 });

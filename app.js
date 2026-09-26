@@ -377,6 +377,9 @@ function sortearImparcial(presentes) {
     renderTimes(timesSorteadosGlobal);
     window.scrollTo({ top: 0, behavior: 'smooth' });
     salvarBackup();
+
+    // Sync: registra no servidor quem compareceu (IDs de quem foi sorteado)
+    lfSyncEnviar('/presencas', { jogadores_ids: times.flatMap(t => t.jogadores.map(j => j.id)) });
 }
 
 function renderTimes(times) {
