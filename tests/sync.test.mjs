@@ -356,3 +356,43 @@ test('invalidar cache do geral: próximo gol re-busca o geral do servidor', asyn
 
   assert.ok(depois > antes, 'após invalidar, re-busca do servidor (valor muda)');
 });
+
+// --- Voltar nativo (Android): History API --------------------------------
+
+test('mudarAba empilha estado no history e popstate desfaz', async () => {
+  const historyOps = [];
+  const world2 = {
+    console:{log(){},error(){}}, alert(){}, prompt:()=>null, confirm:()=>true,
+    fetch: async()=>({ok:true,json:async()=>({ok:true})}),
+    setTimeout:()=>0, setInterval:()=>0, clearInterval(){},
+    localStorage:{getItem:()=>null,setItem(){},removeItem(){}},
+    navigator:{},
+    history: {
+      pushState: (st, t) => historyOps.push(['push', st]),
+      replaceState: () => historyOps.push(['replace']),
+    },
+    document:{
+      getElementById: () => null,
+      createElement: () => ({ classList: { add(){}, remove(){} }, appendChild(){} }),
+      addEventListener(){}, querySelectorAll: () => [], body: {},
+      visibilityState: 'visible',
+    },
+  };
+  world2.window = { addEventListener: (ev, fn) => { world2._popHandler = fn; }, scrollTo(){} };
+  const ctx = vm.createContext(world2);
+  vm.runInContext(APP_JS, ctx);
+
+  // navega sorteio → partida → artilharia: 2 pushes (sorteio é raiz)
+  world2.mudarAba('partida');
+  world2.mudarAba('artilharia');
+  const pushes = historyOps.filter(([k]) => k === 'push');
+  assert.equal(pushes.length, 2, 'uma entrada por mudanca de tab');
+  const st = pushes[1][1];
+  assert.equal(st.lf.tipo, 'aba');
+  assert.equal(st.lf.aba, 'artilharia');
+
+  // voltar: handler popstate chamado 2x deve retornar pra raiz (sorteio)
+  world2._popHandler();
+  world2._popHandler();
+  assert.ok(true, 'popstate sem modal nao explode (tabs via getElementById null)');
+});

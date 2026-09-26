@@ -154,6 +154,20 @@ function verificarLimpezaMeiaNoite() {
     }
 }
 
+// ============================================================
+// NAVEGAÇÃO VOLTAR (Android): comportamento nativo via History API
+// Cada tab/modal aberto empilha um estado; o botão voltar (popstate)
+// desfaz na ordem: fecha modal → volta pra tab anterior → só então
+// sai do app (comportamento esperado de app nativo instalado).
+// ============================================================
+let abaAtual = 'sorteio';
+
+function navEmpilhar(estado) {
+    // replaceState no boot + pushState a cada navegação: o voltar do
+    // Android consome a pilha do app antes de fechar/minimizar
+    try { history.pushState({ lf: estado }, ''); } catch (e) {}
+}
+
 function mudarAba(aba) {
     document.getElementById('tab-sorteio')?.classList.add('hidden');
     document.getElementById('tab-partida')?.classList.add('hidden');
@@ -167,6 +181,11 @@ function mudarAba(aba) {
     document.getElementById(`tab-${aba}`)?.classList.remove('hidden');
     document.getElementById(`nav-${aba}`)?.classList.remove('text-zinc-500');
     document.getElementById(`nav-${aba}`)?.classList.add('text-brand');
+
+    if (aba !== abaAtual) {
+        abaAtual = aba;
+        navEmpilhar({ tipo: 'aba', aba });
+    }
 
     if (aba === 'artilharia') renderArtilharia();
 }
@@ -488,6 +507,7 @@ function abrirModalSubSorteio(timeIndex, jogadorSaindoId = null) {
 
     document.getElementById('modal-sub-sorteio')?.classList.remove('hidden');
     document.getElementById('modal-sub-sorteio')?.classList.add('flex');
+    navEmpilhar({ tipo: 'modal', modal: 'sub-sorteio' });
 }
 
 function efetivarSubSorteio(jogadorEntrandoId) {
@@ -669,6 +689,7 @@ function abrirModalGol() {
     document.getElementById('busca-jogador-gol').value = '';
     document.getElementById('modal-gol')?.classList.remove('hidden');
     document.getElementById('modal-gol')?.classList.add('flex');
+    navEmpilhar({ tipo: 'modal', modal: 'gol' });
     
     setTimeout(() => document.getElementById('busca-jogador-gol')?.focus(), 100);
 }
@@ -1130,3 +1151,22 @@ function lfSyncInvalidarCacheGeral() {
     artilhariaGeralCache = null;
     if (vistaArtilhariaAtual === 'geral') renderArtilharia();
 }
+
+// Voltar (Android/gesture): desfaz a última navegação empilhada.
+// Na raiz (sem estados), não intercepta — o app fecha/minimiza como nativo.
+window.addEventListener('popstate', () => {
+    const modalGol = document.getElementById('modal-gol');
+    const modalSub = document.getElementById('modal-sub-sorteio');
+    if (modalGol && !modalGol.classList.contains('hidden')) {
+        fecharModalGol();
+        return;
+    }
+    if (modalSub && !modalSub.classList.contains('hidden')) {
+        fecharModalSubSorteio();
+        return;
+    }
+    // sem modal aberto: volta pra tab anterior conhecida (sorteio é raiz)
+    if (abaAtual !== 'sorteio') {
+        mudarAba('sorteio');
+    }
+});
