@@ -395,3 +395,43 @@ test('sorteio com sync desligado NÃO envia presencas', async () => {
   const presenca = fetchCalls.find((c) => String(c.url).endsWith('/presencas'));
   assert.equal(presenca, undefined, 'nenhum POST /presencas');
 });
+
+test('atrasado confirmado depois do sorteio ganha presenca no servidor', async () => {
+  // Simula sorteio já feito via backupPelada (o boot hidrata timesSorteadosGlobal)
+  const backup = {
+    dataPelada: new Date().toDateString(),
+    timesSorteadosGlobal: [
+      { nome: 'Time 1', jogadores: [{ id: 1, nome: 'Râneer', posicao: 'linha' }] },
+      { nome: 'Time 2', jogadores: [{ id: 5, nome: 'Michel', posicao: 'goleiro' }] },
+    ],
+  };
+  const { world, fetchCalls } = carregarApp({
+    storageInitial: {
+      lfSyncEndpoint: 'https://lf.example.com',
+      backupPelada: JSON.stringify(backup),
+    },
+  });
+  // jogadoresData default do app.js: todos presente:false — id 2 (Alex) tá fora dos times acima
+  fetchCalls.length = 0;
+
+  world.togglePresenca(2);
+  await new Promise((r) => setTimeout(r, 0));
+
+  const presenca = fetchCalls.find((c) => String(c.url).endsWith('/presencas'));
+  assert.ok(presenca, 'POST /presencas disparado no toggle');
+  const body = JSON.parse(presenca.opts.body);
+  assert.deepEqual(body.jogadores_ids, [2], 'só o atrasado confirmado');
+});
+
+test('toggle ANTES do sorteio (times vazios) nao envia nada', async () => {
+  const { world, fetchCalls } = carregarApp({
+    storageInitial: { lfSyncEndpoint: 'https://lf.example.com' },
+  });
+  fetchCalls.length = 0;
+
+  world.togglePresenca(3); // default: ausente, sem times formados
+  await new Promise((r) => setTimeout(r, 0));
+
+  const presenca = fetchCalls.find((c) => String(c.url).endsWith('/presencas'));
+  assert.equal(presenca, undefined, 'sem sorteio = sem POST (sorteio enviara todos)');
+});
