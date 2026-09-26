@@ -356,3 +356,27 @@ test('invalidar cache do geral: próximo gol re-busca o geral do servidor', asyn
 
   assert.ok(depois > antes, 'após invalidar, re-busca do servidor (valor muda)');
 });
+
+// --- Vista Geral com presenças e média ----------------------------------
+
+test('vista geral propaga presencas e media de gols do servidor', async () => {
+  const { world } = carregarApp({
+    storageInitial: { lfSyncEndpoint: 'https://lf.example.com' },
+    fetchImpl: async () => jsonResp({
+      ok: true,
+      artilharia: [
+        { id: 22, nome: 'Felipe Teo.', gols: 10, presencas: 4, media_gols: 2.5 },
+        { id: 1, nome: 'Râneer', gols: 6, presencas: 2, media_gols: 3 },
+        { id: 5, nome: 'Michel', gols: 0, presencas: 5, media_gols: 0 },
+      ],
+    }),
+  });
+
+  const dados = await world.lfSyncArtilhariaGeral();
+  assert.ok(dados, 'cache populado');
+  const felipe = dados.find((d) => d.nome === 'Felipe Teo.');
+  assert.equal(felipe.presencas, 4);
+  assert.equal(felipe.media_gols, 2.5);
+  // quem não marcou não entra na vista (regra existente)
+  assert.equal(dados.find((d) => d.nome === 'Michel'), undefined);
+});

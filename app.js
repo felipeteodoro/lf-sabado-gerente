@@ -817,6 +817,11 @@ function renderListaArtilheiros(arrayArtilheiros) {
             </div>
             <div class="flex items-center gap-3">
                 ${medalha}
+                ${jogador.presencas !== undefined ? `
+                <div class="text-right leading-tight mr-1" title="Presenças e média de gols por dia de pelada">
+                    <div class="text-[11px] font-bold text-zinc-400">${jogador.presencas}x</div>
+                    <div class="text-[11px] font-bold text-zinc-500">${jogador.media_gols !== null ? jogador.media_gols.toFixed(1).replace('.', ',') + '/j' : '—'}</div>
+                </div>` : ''}
                 <div class="bg-[var(--c-brand)] border border-white/10 text-white font-teko w-10 h-10 rounded text-center leading-[40px] text-[32px] shadow-[0_0_15px_rgba(139,163,96,0.2)]">
                     ${jogador.gols}
                 </div>
@@ -1117,7 +1122,13 @@ async function lfSyncArtilhariaGeral() {
                 // Foto: prioriza a.foto do servidor; fallback no jogador local
                 const idNum = parseInt(a.id, 10);
                 const jogador = jogadoresData.find(j => j.id === idNum);
-                return { nome: a.nome, gols: a.gols, foto: a.foto || (jogador ? jogador.foto : '') };
+                return {
+                    nome: a.nome,
+                    gols: a.gols,
+                    foto: a.foto || (jogador ? jogador.foto : ''),
+                    presencas: a.presencas ?? 0,
+                    media_gols: a.media_gols ?? null
+                };
             });
         return artilhariaGeralCache;
     } catch (err) {
