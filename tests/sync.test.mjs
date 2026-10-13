@@ -452,9 +452,16 @@ test('jogadoresData inclui Marcelo, Leandro Bar., Arthur Lin.', async () => {
   const match = src.match(/let jogadoresData = \[([\s\S]*?)\];/);
   assert.ok(match, 'array jogadoresData presente em app.js');
   const linhas = match[1].split('\n').filter(l => l.includes('id:'));
-  for (const n of ['Marcelo', 'Leandro Bar.', 'Arthur Lin.']) {
+  for (const n of ['Marcelo Mam.', 'Leandro Bar.', 'Arthur Lin.']) {
     assert.ok(linhas.some(l => l.includes(`nome: "${n}"`)), `${n} esta na lista`);
   }
+  // E o Marcelo fantasma (sem sobrenome, id 53) NÃO deve estar
+  assert.ok(!linhas.some(l => /"Marcelo"\s*,/.test(l)), 'Marcelo (sem sobrenome) NAO esta na lista');
+  // E o Richard (id 50, cadastrado 2026-10-12) deve estar
+  assert.ok(linhas.some(l => l.includes('id: 50') && l.includes('Richard')), 'Richard (id 50) esta na lista');
+  // E o Túlio com acento
+  assert.ok(linhas.some(l => l.includes('"Túlio"')), 'Tulio com acento esta na lista');
+  assert.ok(!linhas.some(l => l.includes('"Tulio"')), 'Tulio sem acento NAO esta na lista');
 });
 
 
