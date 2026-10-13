@@ -47,6 +47,7 @@ let jogadoresData = [
     { id: 46, nome: "Túlio Mor.", posicao: "linha", presente: false, foto: "fotos/tulio_mor_v2.jpg" },
     { id: 47, nome: "Yuri Vit.", posicao: "linha", presente: false, foto: "fotos/yuri_vit_v2.jpg" },
     { id: 48, nome: "Marcelo Mam.", posicao: "goleiro", presente: false, foto: "fotos/marcelo_mam_v2.jpg" },
+    { id: 49, nome: "Lucas Sil.", posicao: "linha", presente: false, foto: "fotos/lucas_sil_v2.jpg" },
     { id: 54, nome: "Leandro Bar.", posicao: "linha", presente: false, foto: "fotos/leandro_bar_v2.jpg" },
     { id: 55, nome: "Arthur Lin.", posicao: "linha", presente: false, foto: "fotos/arthur_lin_v2.jpg" },
     { id: 56, nome: "Heitor", posicao: "linha", presente: false, foto: "fotos/heitor_v2.jpg" }
@@ -96,7 +97,7 @@ function getAvatarUrl(nome) {
 // Cache-buster nas URLs de foto. Bumpa junto com o sw.js pra forçar
 // o navegador a re-baixar a foto (quebra qualquer cache HTTP do Chrome
 // que tenha prendado uma resposta 404 antiga).
-const FOTOS_VERSION = '38';
+const FOTOS_VERSION = '40';
 function fotoUrl(path) {
     if (!path) return path;
     return path + '?v=' + FOTOS_VERSION;
