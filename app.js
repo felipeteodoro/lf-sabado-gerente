@@ -16,7 +16,7 @@ let jogadoresData = [
     { id: 15, nome: "Wesley", posicao: "linha", presente: false, foto: "fotos/wesley_v2.jpg" },
     { id: 16, nome: "Jorge", posicao: "linha", presente: false, foto: "fotos/jorge_v2.jpg" },
     { id: 17, nome: "Braz", posicao: "linha", presente: false, foto: "fotos/braz_v2.jpg" },
-    { id: 18, nome: "Tulio", posicao: "linha", presente: false, foto: "fotos/tulio_v2.jpg" },
+    { id: 18, nome: "Túlio", posicao: "linha", presente: false, foto: "fotos/tulio_v2.jpg" },
     { id: 19, nome: "Paulo", posicao: "linha", presente: false, foto: "fotos/paulo_v2.jpg" },
     { id: 20, nome: "Teta", posicao: "linha", presente: false, foto: "fotos/teta_v2.jpg" },
     { id: 21, nome: "Daniel Par.", posicao: "linha", presente: false, foto: "fotos/daniel_par_v2.jpg" },
@@ -48,6 +48,7 @@ let jogadoresData = [
     { id: 47, nome: "Yuri Vit.", posicao: "linha", presente: false, foto: "fotos/yuri_vit_v2.jpg" },
     { id: 48, nome: "Marcelo Mam.", posicao: "goleiro", presente: false, foto: "fotos/marcelo_mam_v2.jpg" },
     { id: 49, nome: "Lucas Sil.", posicao: "linha", presente: false, foto: "fotos/lucas_sil_v2.jpg" },
+    { id: 50, nome: "Richard", posicao: "linha", presente: false, foto: "fotos/richard_v2.jpg" },
     { id: 54, nome: "Leandro Bar.", posicao: "linha", presente: false, foto: "fotos/leandro_bar_v2.jpg" },
     { id: 55, nome: "Arthur Lin.", posicao: "linha", presente: false, foto: "fotos/arthur_lin_v2.jpg" },
     { id: 56, nome: "Heitor", posicao: "linha", presente: false, foto: "fotos/heitor_v2.jpg" }
@@ -97,7 +98,7 @@ function getAvatarUrl(nome) {
 // Cache-buster nas URLs de foto. Bumpa junto com o sw.js pra forçar
 // o navegador a re-baixar a foto (quebra qualquer cache HTTP do Chrome
 // que tenha prendado uma resposta 404 antiga).
-const FOTOS_VERSION = '40';
+const FOTOS_VERSION = '41';
 function fotoUrl(path) {
     if (!path) return path;
     return path + '?v=' + FOTOS_VERSION;
