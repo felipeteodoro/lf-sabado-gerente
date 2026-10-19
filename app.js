@@ -98,7 +98,7 @@ function getAvatarUrl(nome) {
 // Cache-buster nas URLs de foto. Bumpa junto com o sw.js pra forçar
 // o navegador a re-baixar a foto (quebra qualquer cache HTTP do Chrome
 // que tenha prendado uma resposta 404 antiga).
-const FOTOS_VERSION = '41';
+const FOTOS_VERSION = '42';
 function fotoUrl(path) {
     if (!path) return path;
     return path + '?v=' + FOTOS_VERSION;
@@ -658,16 +658,69 @@ function renderGolsPartida() {
     painel.classList.remove('hidden');
     feed.innerHTML = '';
 
-    [...golsFeedPartida].reverse().forEach(gol => {
+    [...golsFeedPartida].reverse().forEach((gol, idx) => {
+        // idx reverso: o último gol é idx=0. Mapear para o índice real do array.
+        const realIdx = golsFeedPartida.length - 1 - idx;
         const item = document.createElement('div');
         item.className = 'flex items-center gap-3 bg-black/40 border border-white/5 rounded p-2.5';
         item.innerHTML = `
             <img src="${fotoUrl(gol.foto)}" onerror="this.onerror=null; this.src=getAvatarUrl('${gol.nome}')" class="w-9 h-9 object-cover rounded-md bg-black/80 border border-white/10 shrink-0">
             <span class="font-bold text-white truncate flex-grow">${gol.nome}</span>
             <span class="led-text text-brand text-lg tabular-nums shrink-0">${gol.minuto}'</span>
+            <button type="button" data-remove-gol="${realIdx}" class="ml-2 text-zinc-500 hover:text-red-400 transition-colors shrink-0" title="Remover gol" aria-label="Remover gol de ${gol.nome}">
+                <i class="fa-solid fa-trash-can text-base"></i>
+            </button>
         `;
         feed.appendChild(item);
     });
+    // Liga os botões de remover (delegação simples)
+    feed.querySelectorAll('[data-remove-gol]').forEach(btn => {
+        btn.addEventListener('click', () => removerGol(Number(btn.dataset.removeGol)));
+    });
+}
+
+// Remove um gol da partida atual (UI + servidor + contadores)
+// Tem confirmação, é otimista (some da UI na hora), e restaura se o servidor falhar.
+async function removerGol(index) {
+    if (index < 0 || index >= golsFeedPartida.length) return;
+    const gol = golsFeedPartida[index];
+    if (!confirm(`Remover o gol de ${gol.nome} aos ${gol.minuto}?`)) return;
+
+    // Snapshot pra restaurar se der erro
+    const snapshot = JSON.parse(JSON.stringify(golsFeedPartida));
+    const snapshotGolsPartida = golsPartidaAtual;
+    const snapshotGolsJogador = JSON.parse(JSON.stringify(golsJogadorPartida));
+    const snapshotArtilharia = localStorage.getItem('artilhariaPelada');
+
+    // Remoção otimista
+    golsFeedPartida.splice(index, 1);
+    golsPartidaAtual = Math.max(0, golsPartidaAtual - 1);
+    if (golsJogadorPartida[gol.id]) {
+        golsJogadorPartida[gol.id] = Math.max(0, golsJogadorPartida[gol.id] - 1);
+        if (golsJogadorPartida[gol.id] === 0) delete golsJogadorPartida[gol.id];
+    }
+    let artilharia = JSON.parse(localStorage.getItem('artilhariaPelada')) || {};
+    if (artilharia[gol.id] && artilharia[gol.id].gols > 0) {
+        artilharia[gol.id].gols--;
+        if (artilharia[gol.id].gols === 0) delete artilharia[gol.id];
+    }
+    localStorage.setItem('artilhariaPelada', JSON.stringify(artilharia));
+    renderGolsPartida();
+    salvarBackup();
+    lfSyncInvalidarCacheGeral();
+
+    // Tenta deletar no servidor
+    const ok = await lfSyncRemoverGol(gol.dbId);
+    if (!ok && gol.dbId !== null) {
+        // Servidor falhou -> restaura
+        alert('Não foi possível remover o gol no servidor. Restaurando.');
+        golsFeedPartida = snapshot;
+        golsPartidaAtual = snapshotGolsPartida;
+        golsJogadorPartida = snapshotGolsJogador;
+        localStorage.setItem('artilhariaPelada', snapshotArtilharia);
+        renderGolsPartida();
+        salvarBackup();
+    }
 }
 
 function abrirModalGol() {
@@ -755,6 +808,7 @@ function registrarGol(jogadorId, jogadorNome) {
     const jogador = jogadoresData.find(j => j.id === jogadorId);
     golsFeedPartida.push({
         id: jogadorId,
+        dbId: null,  // preenchido quando o sync confirma o id do gol no servidor
         nome: jogadorNome,
         foto: jogador ? jogador.foto : '',
         minuto: minutoGolAtual()
@@ -772,14 +826,13 @@ function registrarGol(jogadorId, jogadorNome) {
     localStorage.setItem('artilhariaPelada', JSON.stringify(artilharia));
     fecharModalGol();
     salvarBackup();
-    lfSyncRegistrarGol(jogadorId, jogadorNome, minutoGolAtual());
+    lfSyncRegistrarGol(jogadorId, jogadorNome, minutoGolAtual(), golsFeedPartida.length - 1);
     lfSyncInvalidarCacheGeral();
 
-    if (golsJogadorPartida[jogadorId] >= 2) {
-        finalizarPartidaTempo("Fim de Jogo");
-    } else if (golsPartidaAtual >= 3) {
-        finalizarPartidaTempo("Fim de Jogo");
-    }
+    // NOTA (R-2026-10-17): não finalizar partida automaticamente.
+    // Critério de "2 gols do mesmo atleta" ou "3 gols no total" apenas
+    // sinaliza na UI; o usuário encerra manualmente (ou inicia nova partida).
+    // Permite corrigir marcação errada SEM perder o estado.
 }
 
 function renderArtilharia() {
@@ -1097,7 +1150,8 @@ function lfSyncToggleConfig() {
 }
 
 // Envia gol ao backend; cria a partida no servidor se ainda não existe
-async function lfSyncRegistrarGol(jogadorId, jogadorNome, minuto) {
+// feedIndex: índice no array golsFeedPartida (pra guardar o id do servidor no item)
+async function lfSyncRegistrarGol(jogadorId, jogadorNome, minuto, feedIndex) {
     if (!lfSyncAtivo()) return;
     const url = localStorage.getItem(LF_SYNC_ENDPOINT_KEY);
     let partidaId = localStorage.getItem('lfSyncPartidaId');
@@ -1109,11 +1163,36 @@ async function lfSyncRegistrarGol(jogadorId, jogadorNome, minuto) {
             partidaId = String(dados.partida.id);
             localStorage.setItem('lfSyncPartidaId', partidaId);
         }
-        await lfSyncEnviar('/gols', { partida_id: Number(partidaId), jogador_id: String(jogadorId), time: 'time1', minuto });
+        const respGol = await fetch(url + '/gols', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ partida_id: Number(partidaId), jogador_id: String(jogadorId), time: 'time1', minuto })
+        });
+        const dadosGol = await respGol.json().catch(() => null);
+        // Se o servidor retornou o id do gol, guarda no array local pra permitir remoção depois
+        if (dadosGol && dadosGol.ok && dadosGol.gol && typeof feedIndex === 'number' && golsFeedPartida[feedIndex]) {
+            golsFeedPartida[feedIndex].dbId = dadosGol.gol.id;
+            // Re-salva o backup pra persistir o dbId (importante pra remoção após restart)
+            if (typeof salvarBackup === 'function') salvarBackup();
+        }
         // Garante que o jogador existe no servidor (id numérico do app)
         await lfSyncEnviar('/jogadores', { id: String(jogadorId), nome: jogadorNome });
     } catch (err) {
         // Offline: a fila do lfSyncEnviar cobre; criação de partida tenta de novo no próximo gol
+    }
+}
+
+// DELETE /gols/:id no servidor. Retorna true se OK, false se falhou.
+// Se dbId for null (gol nunca foi sincronizado), retorna true sem chamar o servidor.
+async function lfSyncRemoverGol(dbId) {
+    if (dbId === null || dbId === undefined) return true; // sem id -> nada a remover no servidor
+    if (!lfSyncAtivo()) return true; // sem sync, remoção é só local
+    const url = localStorage.getItem(LF_SYNC_ENDPOINT_KEY);
+    try {
+        const resp = await fetch(url + '/gols/' + dbId, { method: 'DELETE' });
+        return resp.ok;
+    } catch (err) {
+        return false;
     }
 }
 
