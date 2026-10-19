@@ -66,7 +66,7 @@ function carregarApp({ fetchImpl, storageInitial = {} } = {}) {
   const fetchCalls = [];
   const windowHandlers = {};
   const world = {
-    console: { log() {}, error() {} },
+    console: { log() {}, error() {}, warn() {}, info() {} },
     alert: (msg) => { world._alerts.push(String(msg)); },
     prompt: () => null,
     confirm: () => true,

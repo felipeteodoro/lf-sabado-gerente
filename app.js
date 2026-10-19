@@ -97,7 +97,7 @@ function getAvatarUrl(nome) {
 // Cache-buster nas URLs de foto. Bumpa junto com o sw.js pra forçar
 // o navegador a re-baixar a foto (quebra qualquer cache HTTP do Chrome
 // que tenha prendado uma resposta 404 antiga).
-const FOTOS_VERSION = '43';
+const FOTOS_VERSION = '44';
 function fotoUrl(path) {
     if (!path) return path;
     return path + '?v=' + FOTOS_VERSION;
@@ -162,12 +162,21 @@ function init() {
     // nao foi inicializada neste ponto do codigo (TDZ). setTimeout empilha
     // a chamada pra depois do script acabar de rodar.
     setTimeout(() => {
-        if (!lfSyncAtivo()) return;
-        lfSyncHidratarJogadores().then(() => {
-            renderLista();
-            renderArtilharia();
-            salvarBackup();
-        }).catch(err => {/* silencioso - offline ou erro */});
+        if (!lfSyncAtivo()) {
+            console.info('[hidratar] sync desativado (sem endpoint) - Michel/Lucas vao usar valores hardcoded');
+            return;
+        }
+        console.info('[hidratar] iniciando hidratacao...');
+        lfSyncHidratarJogadores().then((atualizou) => {
+            console.info('[hidratar] ok, atualizou=' + !!atualizou);
+            if (atualizou) {
+                renderLista();
+                renderArtilharia();
+                salvarBackup();
+            }
+        }).catch(err => {
+            console.warn('[hidratar] falhou:', err && err.message ? err.message : err);
+        });
     }, 0);
 }
 
@@ -280,18 +289,30 @@ function adicionarPlayer() {
         const qtdPlayers = jogadoresData.filter(j => j.nome.startsWith('Player')).length;
         nomeFinal = `Player ${qtdPlayers + 1}`;
     }
-    
+
+    // R-2026-10-20: rejeita nomes vazios ou só espaços (defesa em profundidade)
+    if (!nomeFinal || !nomeFinal.trim()) {
+        alert('Nome inválido. Tente novamente.');
+        return;
+    }
+
     const ehLinha = confirm(`O ${nomeFinal} é Jogador de Linha ou Goleiro?\n\n✅ Clique em [OK] se for LINHA.\n❌ Clique em [Cancelar] se for GOLEIRO.`);
     const posicaoFinal = ehLinha ? "linha" : "goleiro";
-    
-    const novoId = Math.max(0, ...jogadoresData.map(j => j.id)) + 1;
+
+    // R-2026-10-20: garantir que o ID é numérico (defesa em profundidade pra
+    // bater com a validacao do backend, mesmo se o max() der algum NaN)
+    const maxId = jogadoresData.reduce((acc, j) => {
+        const n = Number(j.id);
+        return Number.isFinite(n) && n > acc ? n : acc;
+    }, 0);
+    const novoId = maxId + 1;
 
     const novoJogador = {
         id: novoId,
         nome: nomeFinal,
-        posicao: posicaoFinal, 
-        presente: true, 
-        foto: "" 
+        posicao: posicaoFinal,
+        presente: true,
+        foto: ""
     };
 
     jogadoresData.push(novoJogador);
@@ -302,10 +323,28 @@ function adicionarPlayer() {
 
     const totalJogadores = document.getElementById('total-jogadores');
     if(totalJogadores) totalJogadores.innerText = jogadoresData.length;
-    
-    renderLista(); 
+
+    renderLista();
     atualizarContador();
     salvarBackup();
+
+    // R-2026-10-20: envia pro backend se sync ativo. Antes ficava só local
+    // e o servidor nunca ficava sabendo (gerava inconsistencia entre
+    // localStorage e o servidor /estado).
+    if (lfSyncAtivo()) {
+        lfSyncEnviar('/jogadores', { id: String(novoId), nome: nomeFinal, posicao: posicaoFinal })
+            .then((r) => {
+                if (r && r.status === 400) {
+                    // Backend rejeitou (slug ou outro motivo). Rollback local.
+                    const idx = jogadoresData.findIndex(j => j.id === novoId);
+                    if (idx !== -1) jogadoresData.splice(idx, 1);
+                    renderLista();
+                    atualizarContador();
+                    salvarBackup();
+                    alert('Servidor rejeitou o cadastro: ' + r.body);
+                }
+            });
+    }
 }
 
 function alocarJogadorAtrasado(jogador) {
@@ -1024,18 +1063,27 @@ function lfSyncConfigurar(url) {
 }
 
 async function lfSyncEnviar(path, body) {
-    if (!lfSyncAtivo()) return;
+    if (!lfSyncAtivo()) return { ok: false, reason: 'sync-off' };
     const url = localStorage.getItem(LF_SYNC_ENDPOINT_KEY);
     try {
-        await fetch(url + path, {
+        const resp = await fetch(url + path, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body)
         });
+        if (!resp.ok) {
+            // R-2026-10-20: loga e propaga o erro - antes engolia silenciosamente
+            const texto = await resp.text().catch(() => '');
+            console.warn('[lfSyncEnviar] ' + path + ' -> HTTP ' + resp.status + ': ' + texto);
+            return { ok: false, status: resp.status, body: texto };
+        }
+        return { ok: true, resp };
     } catch (err) {
         // Offline: enfileira pra sincronizar depois
+        console.warn('[lfSyncEnviar] ' + path + ' offline, enfileirando:', err && err.message);
         lfSyncFila.push({ path, body });
         localStorage.setItem('lfSyncFila', JSON.stringify(lfSyncFila));
+        return { ok: false, reason: 'offline', queued: true };
     }
 }
 
