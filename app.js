@@ -16,7 +16,7 @@ let jogadoresData = [
     { id: 15, nome: "Wesley", posicao: "linha", presente: false, foto: "fotos/wesley_v2.jpg" },
     { id: 16, nome: "Jorge", posicao: "linha", presente: false, foto: "fotos/jorge_v2.jpg" },
     { id: 17, nome: "Braz", posicao: "linha", presente: false, foto: "fotos/braz_v2.jpg" },
-    { id: 18, nome: "Túlio", posicao: "linha", presente: false, foto: "fotos/tulio_v2.jpg" },
+    { id: 18, nome: "Tulio", posicao: "linha", presente: false, foto: "fotos/tulio_v2.jpg" },
     { id: 19, nome: "Paulo", posicao: "linha", presente: false, foto: "fotos/paulo_v2.jpg" },
     { id: 20, nome: "Teta", posicao: "linha", presente: false, foto: "fotos/teta_v2.jpg" },
     { id: 21, nome: "Daniel Par.", posicao: "linha", presente: false, foto: "fotos/daniel_par_v2.jpg" },
@@ -48,7 +48,6 @@ let jogadoresData = [
     { id: 47, nome: "Yuri Vit.", posicao: "linha", presente: false, foto: "fotos/yuri_vit_v2.jpg" },
     { id: 48, nome: "Marcelo Mam.", posicao: "goleiro", presente: false, foto: "fotos/marcelo_mam_v2.jpg" },
     { id: 49, nome: "Lucas Sil.", posicao: "linha", presente: false, foto: "fotos/lucas_sil_v2.jpg" },
-    { id: 50, nome: "Richard", posicao: "linha", presente: false, foto: "fotos/richard_v2.jpg" },
     { id: 54, nome: "Leandro Bar.", posicao: "linha", presente: false, foto: "fotos/leandro_bar_v2.jpg" },
     { id: 55, nome: "Arthur Lin.", posicao: "linha", presente: false, foto: "fotos/arthur_lin_v2.jpg" },
     { id: 56, nome: "Heitor", posicao: "linha", presente: false, foto: "fotos/heitor_v2.jpg" }
@@ -98,7 +97,7 @@ function getAvatarUrl(nome) {
 // Cache-buster nas URLs de foto. Bumpa junto com o sw.js pra forçar
 // o navegador a re-baixar a foto (quebra qualquer cache HTTP do Chrome
 // que tenha prendado uma resposta 404 antiga).
-const FOTOS_VERSION = '42';
+const FOTOS_VERSION = '43';
 function fotoUrl(path) {
     if (!path) return path;
     return path + '?v=' + FOTOS_VERSION;
@@ -118,7 +117,7 @@ function salvarBackup() {
 
 function init() {
     verificarLimpezaMeiaNoite();
-    
+
     const backup = localStorage.getItem('backupPelada');
     if (backup) {
         const dados = JSON.parse(backup);
@@ -129,14 +128,14 @@ function init() {
         golsJogadorPartida = dados.golsJogadorPartida || {};
         golsFeedPartida = dados.golsFeedPartida || [];
         renderGolsPartida();
-        
+
         if (timesSorteadosGlobal.length > 0) {
             document.getElementById('btn-sortear')?.classList.add('hidden');
             document.getElementById('lista-jogadores-section')?.classList.add('hidden');
             document.getElementById('resultado-section')?.classList.remove('hidden');
             renderTimes(timesSorteadosGlobal);
         }
-        
+
         cronometroRodando = false; 
         const btnCronometro = document.getElementById('btn-cronometro');
         if (btnCronometro) {
@@ -156,6 +155,20 @@ function init() {
     atualizarContador();
     atualizarDisplayCronometro();
     renderArtilharia();
+
+    // R-2026-10-20: hidrata jogadores do servidor (posicao, foto) sem sobrescrever
+    // a presenca (que eh local e reflete o checklist da UI).
+    // Chamado via setTimeout(0) porque LF_SYNC_ENDPOINT_KEY (const) ainda
+    // nao foi inicializada neste ponto do codigo (TDZ). setTimeout empilha
+    // a chamada pra depois do script acabar de rodar.
+    setTimeout(() => {
+        if (!lfSyncAtivo()) return;
+        lfSyncHidratarJogadores().then(() => {
+            renderLista();
+            renderArtilharia();
+            salvarBackup();
+        }).catch(err => {/* silencioso - offline ou erro */});
+    }, 0);
 }
 
 function verificarLimpezaMeiaNoite() {
@@ -658,69 +671,16 @@ function renderGolsPartida() {
     painel.classList.remove('hidden');
     feed.innerHTML = '';
 
-    [...golsFeedPartida].reverse().forEach((gol, idx) => {
-        // idx reverso: o último gol é idx=0. Mapear para o índice real do array.
-        const realIdx = golsFeedPartida.length - 1 - idx;
+    [...golsFeedPartida].reverse().forEach(gol => {
         const item = document.createElement('div');
         item.className = 'flex items-center gap-3 bg-black/40 border border-white/5 rounded p-2.5';
         item.innerHTML = `
             <img src="${fotoUrl(gol.foto)}" onerror="this.onerror=null; this.src=getAvatarUrl('${gol.nome}')" class="w-9 h-9 object-cover rounded-md bg-black/80 border border-white/10 shrink-0">
             <span class="font-bold text-white truncate flex-grow">${gol.nome}</span>
             <span class="led-text text-brand text-lg tabular-nums shrink-0">${gol.minuto}'</span>
-            <button type="button" data-remove-gol="${realIdx}" class="ml-2 text-zinc-500 hover:text-red-400 transition-colors shrink-0" title="Remover gol" aria-label="Remover gol de ${gol.nome}">
-                <i class="fa-solid fa-trash-can text-base"></i>
-            </button>
         `;
         feed.appendChild(item);
     });
-    // Liga os botões de remover (delegação simples)
-    feed.querySelectorAll('[data-remove-gol]').forEach(btn => {
-        btn.addEventListener('click', () => removerGol(Number(btn.dataset.removeGol)));
-    });
-}
-
-// Remove um gol da partida atual (UI + servidor + contadores)
-// Tem confirmação, é otimista (some da UI na hora), e restaura se o servidor falhar.
-async function removerGol(index) {
-    if (index < 0 || index >= golsFeedPartida.length) return;
-    const gol = golsFeedPartida[index];
-    if (!confirm(`Remover o gol de ${gol.nome} aos ${gol.minuto}?`)) return;
-
-    // Snapshot pra restaurar se der erro
-    const snapshot = JSON.parse(JSON.stringify(golsFeedPartida));
-    const snapshotGolsPartida = golsPartidaAtual;
-    const snapshotGolsJogador = JSON.parse(JSON.stringify(golsJogadorPartida));
-    const snapshotArtilharia = localStorage.getItem('artilhariaPelada');
-
-    // Remoção otimista
-    golsFeedPartida.splice(index, 1);
-    golsPartidaAtual = Math.max(0, golsPartidaAtual - 1);
-    if (golsJogadorPartida[gol.id]) {
-        golsJogadorPartida[gol.id] = Math.max(0, golsJogadorPartida[gol.id] - 1);
-        if (golsJogadorPartida[gol.id] === 0) delete golsJogadorPartida[gol.id];
-    }
-    let artilharia = JSON.parse(localStorage.getItem('artilhariaPelada')) || {};
-    if (artilharia[gol.id] && artilharia[gol.id].gols > 0) {
-        artilharia[gol.id].gols--;
-        if (artilharia[gol.id].gols === 0) delete artilharia[gol.id];
-    }
-    localStorage.setItem('artilhariaPelada', JSON.stringify(artilharia));
-    renderGolsPartida();
-    salvarBackup();
-    lfSyncInvalidarCacheGeral();
-
-    // Tenta deletar no servidor
-    const ok = await lfSyncRemoverGol(gol.dbId);
-    if (!ok && gol.dbId !== null) {
-        // Servidor falhou -> restaura
-        alert('Não foi possível remover o gol no servidor. Restaurando.');
-        golsFeedPartida = snapshot;
-        golsPartidaAtual = snapshotGolsPartida;
-        golsJogadorPartida = snapshotGolsJogador;
-        localStorage.setItem('artilhariaPelada', snapshotArtilharia);
-        renderGolsPartida();
-        salvarBackup();
-    }
 }
 
 function abrirModalGol() {
@@ -808,7 +768,6 @@ function registrarGol(jogadorId, jogadorNome) {
     const jogador = jogadoresData.find(j => j.id === jogadorId);
     golsFeedPartida.push({
         id: jogadorId,
-        dbId: null,  // preenchido quando o sync confirma o id do gol no servidor
         nome: jogadorNome,
         foto: jogador ? jogador.foto : '',
         minuto: minutoGolAtual()
@@ -826,13 +785,14 @@ function registrarGol(jogadorId, jogadorNome) {
     localStorage.setItem('artilhariaPelada', JSON.stringify(artilharia));
     fecharModalGol();
     salvarBackup();
-    lfSyncRegistrarGol(jogadorId, jogadorNome, minutoGolAtual(), golsFeedPartida.length - 1);
+    lfSyncRegistrarGol(jogadorId, jogadorNome, minutoGolAtual());
     lfSyncInvalidarCacheGeral();
 
-    // NOTA (R-2026-10-17): não finalizar partida automaticamente.
-    // Critério de "2 gols do mesmo atleta" ou "3 gols no total" apenas
-    // sinaliza na UI; o usuário encerra manualmente (ou inicia nova partida).
-    // Permite corrigir marcação errada SEM perder o estado.
+    if (golsJogadorPartida[jogadorId] >= 2) {
+        finalizarPartidaTempo("Fim de Jogo");
+    } else if (golsPartidaAtual >= 3) {
+        finalizarPartidaTempo("Fim de Jogo");
+    }
 }
 
 function renderArtilharia() {
@@ -1150,8 +1110,7 @@ function lfSyncToggleConfig() {
 }
 
 // Envia gol ao backend; cria a partida no servidor se ainda não existe
-// feedIndex: índice no array golsFeedPartida (pra guardar o id do servidor no item)
-async function lfSyncRegistrarGol(jogadorId, jogadorNome, minuto, feedIndex) {
+async function lfSyncRegistrarGol(jogadorId, jogadorNome, minuto) {
     if (!lfSyncAtivo()) return;
     const url = localStorage.getItem(LF_SYNC_ENDPOINT_KEY);
     let partidaId = localStorage.getItem('lfSyncPartidaId');
@@ -1163,36 +1122,11 @@ async function lfSyncRegistrarGol(jogadorId, jogadorNome, minuto, feedIndex) {
             partidaId = String(dados.partida.id);
             localStorage.setItem('lfSyncPartidaId', partidaId);
         }
-        const respGol = await fetch(url + '/gols', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ partida_id: Number(partidaId), jogador_id: String(jogadorId), time: 'time1', minuto })
-        });
-        const dadosGol = await respGol.json().catch(() => null);
-        // Se o servidor retornou o id do gol, guarda no array local pra permitir remoção depois
-        if (dadosGol && dadosGol.ok && dadosGol.gol && typeof feedIndex === 'number' && golsFeedPartida[feedIndex]) {
-            golsFeedPartida[feedIndex].dbId = dadosGol.gol.id;
-            // Re-salva o backup pra persistir o dbId (importante pra remoção após restart)
-            if (typeof salvarBackup === 'function') salvarBackup();
-        }
+        await lfSyncEnviar('/gols', { partida_id: Number(partidaId), jogador_id: String(jogadorId), time: 'time1', minuto });
         // Garante que o jogador existe no servidor (id numérico do app)
         await lfSyncEnviar('/jogadores', { id: String(jogadorId), nome: jogadorNome });
     } catch (err) {
         // Offline: a fila do lfSyncEnviar cobre; criação de partida tenta de novo no próximo gol
-    }
-}
-
-// DELETE /gols/:id no servidor. Retorna true se OK, false se falhou.
-// Se dbId for null (gol nunca foi sincronizado), retorna true sem chamar o servidor.
-async function lfSyncRemoverGol(dbId) {
-    if (dbId === null || dbId === undefined) return true; // sem id -> nada a remover no servidor
-    if (!lfSyncAtivo()) return true; // sem sync, remoção é só local
-    const url = localStorage.getItem(LF_SYNC_ENDPOINT_KEY);
-    try {
-        const resp = await fetch(url + '/gols/' + dbId, { method: 'DELETE' });
-        return resp.ok;
-    } catch (err) {
-        return false;
     }
 }
 
@@ -1218,6 +1152,32 @@ function alternarVistaArtilharia(vista) {
 }
 
 // Busca o acumulado do servidor (cache simples pra não bater a API a cada render)
+// R-2026-10-20: hidrata posicao e foto do servidor no jogadoresData local.
+// NAO sobrescreve `presente` (state local da UI) - so campos autoritativos do servidor.
+// Idempotente: pode ser chamado varias vezes no boot.
+// So roda se o servidor retornou dados validos.
+async function lfSyncHidratarJogadores() {
+    if (!lfSyncAtivo()) return;
+    const url = localStorage.getItem(LF_SYNC_ENDPOINT_KEY);
+    const resp = await fetch(url + '/estado');
+    const dados = await resp.json();
+    if (!dados.ok || !Array.isArray(dados.jogadores)) return;
+    let atualizou = false;
+    for (const srv of dados.jogadores) {
+        const idNum = parseInt(srv.id, 10);
+        if (!Number.isFinite(idNum)) continue;
+        const local = jogadoresData.find(j => j.id === idNum);
+        if (!local) continue;
+        if (local.posicao !== srv.posicao) { local.posicao = srv.posicao; atualizou = true; }
+        if (srv.foto) {
+            const basename = srv.foto.split('/').pop();
+            const localBasename = (local.foto || '').split('/').pop();
+            if (basename !== localBasename) { local.foto = 'fotos/' + basename; atualizou = true; }
+        }
+    }
+    return atualizou;
+}
+
 async function lfSyncArtilhariaGeral() {
     if (!lfSyncAtivo()) return null;
     if (artilhariaGeralCache) return artilhariaGeralCache;
