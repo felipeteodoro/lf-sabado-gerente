@@ -1,4 +1,4 @@
-const CACHE_NAME = 'lf-turma-sabado-v42';
+const CACHE_NAME = 'lf-turma-sabado-v47';
 
 // Arquivos que o app precisa baixar na primeira vez para funcionar offline
 const urlsToCache = [
@@ -8,21 +8,32 @@ const urlsToCache = [
     './app.js',
     './manifest.json',
     './fotos/logo.png',
-    './fotos/apple-touch-icon.png',
-    './audios/apito.mp3',
-    './audios/sorteio.mp3'
+    './fotos/apple-touch-icon.png'
 ];
 
 // Instalação: baixa tudo e ATIVA na hora — sem esperar as abas fecharem.
 // É isso que faz a atualização chegar sem precisar desinstalar/limpar cache.
+// R-2026-10-20: usa cache.add() em loop (em vez de addAll) para que um
+// arquivo com 404 não rejeite TODOS os outros. addAll é all-or-nothing.
+// TAMBEM envolve o waitUntil inteiro em try/catch como rede de seguranca
+// final - se QUALQUER coisa der errado, o install resolve e segue.
 self.addEventListener('install', event => {
     self.skipWaiting();
-    event.waitUntil(
-        caches.open(CACHE_NAME)
-            .then(cache => {
-                return cache.addAll(urlsToCache);
-            })
-    );
+    event.waitUntil((async () => {
+        try {
+            const cache = await caches.open(CACHE_NAME);
+            for (const url of urlsToCache) {
+                try {
+                    await cache.add(url);
+                } catch (err) {
+                    // Continua mesmo se um arquivo der 404 - nao trava o SW inteiro
+                    console.warn('[sw] install skip ' + url + ': ' + (err && err.message ? err.message : err));
+                }
+            }
+        } catch (err) {
+            console.warn('[sw] install overall failed (continuando):', err && err.message ? err.message : err);
+        }
+    })());
 });
 
 // Ativação: assume o controle das abas abertas e limpa caches antigos
