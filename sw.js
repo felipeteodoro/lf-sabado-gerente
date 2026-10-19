@@ -1,4 +1,4 @@
-const CACHE_NAME = 'lf-turma-sabado-v44';
+const CACHE_NAME = 'lf-turma-sabado-v45';
 
 // Arquivos que o app precisa baixar na primeira vez para funcionar offline
 const urlsToCache = [
@@ -8,9 +8,7 @@ const urlsToCache = [
     './app.js',
     './manifest.json',
     './fotos/logo.png',
-    './fotos/apple-touch-icon.png',
-    './audios/apito.mp3',
-    './audios/sorteio.mp3'
+    './fotos/apple-touch-icon.png'
 ];
 
 // Instalação: baixa tudo e ATIVA na hora — sem esperar as abas fecharem.
