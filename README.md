@@ -35,6 +35,32 @@ Cobrem a camada de sincronização (sync desligado não faz fetch, offline enfil
 
 ---
 
+## 🏗️ Arquitetura
+
+O projeto tem **duas peças independentes**. O PWA funciona sozinho; a API é opcional.
+
+```
+┌─────────────────────────┐         ┌──────────────────────────┐
+│  PWA (este repo)        │  sync   │  API (repo separado)     │
+│  GitHub Pages           │────────▶│  Express + SQLite        │
+│  HTML/JS/CSS estático   │◀────────│  Node 24, porta 8887     │
+│  sem build, sem deps    │         │  tabela gols/partidas    │
+└─────────────────────────┘         └──────────────────────────┘
+     ▲                                    ▲
+  wake lock                           fotos (cross-origin)
+  localStorage                          CORS liberado
+```
+
+**Contrato**: o PWA funciona **100% sem a API**. A sincronização é opt-in — desligada por
+padrão, zero requisições. Ligada, cada ação vira uma chamada REST que grava o histórico
+acumulado de artilharia.
+
+- **`docs/api.md`** — endpoints, schema do banco, exemplos de `curl`
+- **`docs/deploy.md`** — topologia, fluxo de deploy, armadilhas conhecidas
+- **`docs/STATUS.md`** — dívida técnica e decisões em aberto
+
+---
+
 ## 💻 Tecnologias Utilizadas
 
 * **HTML5** (Semântico e acessível)

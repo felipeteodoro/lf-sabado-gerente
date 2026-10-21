@@ -24,7 +24,23 @@ fotos/              # Fotos dos jogadores (fallback via getAvatarUrl)
 tests/              # node:test (built-in, zero dependência) — ver "Como testar"
 ```
 
-Não tem `package.json`, não tem bundler. **Adicionar uma dependência nova é uma decisão grande** — pense duas vezes.
+Não tem `package.json`, não tem bundler.
+
+### Documentação correlata
+
+| Doc | Quando ler |
+|---|---|
+| `docs/api.md` | Antes de mexer em sync, gol, presença, artilharia geral, ou chamar a API |
+| `docs/deploy.md` | Antes de subir PWA, mexer em cache/versionamento, ou criar hostname |
+| `docs/STATUS.md` | Antes de propor mudança de arquitetura — tem a dívida conhecida |
+
+**Server é autoridade no nome.** `/jogadores` e `/import` usam `ON CONFLICT DO NOTHING` /
+`INSERT OR IGNORE`: um app com lista local desatualizada não sobrescreve rename feito no
+servidor. Não "conserte" isso pra `ON CONFLICT DO UPDATE`.
+
+**`jogadores.id` é TEXT, não INTEGER** (existem slugs legados). Mandar int em SQL quebra o
+FK de `gols.jogador_id` — o endpoint faz `String()`, mas SQL direto precisa usar string.
+ **Adicionar uma dependência nova é uma decisão grande** — pense duas vezes.
 
 ## Sincronização opcional (camada lfSync*) — leia antes de mexer na artilharia
 
