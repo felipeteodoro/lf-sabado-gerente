@@ -33,6 +33,8 @@ function makeEl() {
     insertAdjacentHTML() {},
     focus() {},
     click() {},
+    querySelectorAll() { return []; },
+    querySelector() { return null; },
     innerHTML: '', innerText: '', textContent: '', value: '', className: '',
   };
   return new Proxy(base, {
@@ -568,4 +570,95 @@ test('hidratar jogadores: sync off retorna sem fazer nada', async () => {
   const r = await world.lfSyncHidratarJogadores();
   assert.equal(r, undefined, 'sem sync, retorna undefined');
   assert.equal(fetchCalls.length, 0, 'nenhum fetch feito');
+});
+
+// --- PR feat/gol-remover: remover gol da partida (UI + servidor) ----
+
+test('remover gol: otimista no local + DELETE no servidor, dbId preenchido', async () => {
+  const { world, storage, fetchCalls } = carregarApp({
+    storageInitial: { lfSyncEndpoint: 'https://lf.exemplo.dev' },
+    fetchImpl: async (url) => {
+      if (url.endsWith('/partidas')) return jsonResp({ ok: true, partida: { id: 7 } });
+      if (url.endsWith('/gols')) return jsonResp({ ok: true, gol: { id: 999 } });
+      if (url.includes('/gols/999')) return jsonResp({ ok: true });
+      return jsonResp({ ok: true });
+    },
+  });
+  // Garante que o sync tá ativo
+  assert.equal(world.lfSyncAtivo(), true);
+
+  // Registra 1 gol pra criar um item no feed
+  world.registrarGol(22, 'Felipe Teo.');
+  // Dispara o sync pendente (microtask)
+  await new Promise(r => setTimeout(r, 0));
+  // O backup (localStorage) deve ter 1 gol com dbId=999 (preenchido pelo servidor)
+  const backupAntes = JSON.parse(storage.getItem('backupPelada'));
+  assert.equal(backupAntes.golsFeedPartida.length, 1);
+  assert.equal(backupAntes.golsFeedPartida[0].dbId, 999, 'servidor devolveu id e o PWA guardou no item');
+
+  // Garante que artilharia local tem 1 gol
+  const artilharia = JSON.parse(storage.getItem('artilhariaPelada'));
+  assert.equal(artilharia[22].gols, 1);
+
+  // Remove o gol
+  await world.removerGol(0);
+
+  // localStorage zerou
+  const depois = JSON.parse(storage.getItem('artilhariaPelada')) || {};
+  assert.equal(depois[22] ? depois[22].gols : 0, 0, 'artilharia decrementou');
+  // Backup zerou
+  const backupDepois = JSON.parse(storage.getItem('backupPelada'));
+  assert.equal(backupDepois.golsFeedPartida.length, 0, 'feed zerou');
+  assert.equal(backupDepois.golsPartidaAtual, 0);
+  // DELETE foi chamado com o id certo
+  const del = fetchCalls.find(c => c.url.includes('/gols/999'));
+  assert.ok(del, 'DELETE /gols/999 foi chamado');
+  assert.equal(del.opts.method, 'DELETE');
+});
+
+test('remover gol: se servidor falhar, restaura snapshot do estado', async () => {
+  const { world, storage } = carregarApp({
+    storageInitial: { lfSyncEndpoint: 'https://lf.exemplo.dev' },
+    fetchImpl: async (url) => {
+      if (url.endsWith('/partidas')) return jsonResp({ ok: true, partida: { id: 7 } });
+      if (url.endsWith('/gols')) return jsonResp({ ok: true, gol: { id: 555 } });
+      if (url.includes('/gols/555')) return { ok: false, status: 500, json: async () => ({ ok: false }) };
+      return jsonResp({ ok: true });
+    },
+  });
+  // Registra gol
+  world.registrarGol(22, 'Felipe Teo.');
+  await new Promise(r => setTimeout(r, 0));
+  const backupAntes = JSON.parse(storage.getItem('backupPelada'));
+  assert.equal(backupAntes.golsFeedPartida[0].dbId, 555);
+
+  // Tenta remover (servidor vai dar 500 -> restaurar)
+  await world.removerGol(0);
+
+  // Estado restaurado: feed ainda tem o gol
+  const backupDepois = JSON.parse(storage.getItem('backupPelada'));
+  assert.equal(backupDepois.golsFeedPartida.length, 1, 'feed restaurado');
+  assert.equal(backupDepois.golsFeedPartida[0].nome, 'Felipe Teo.');
+  // artilharia restaurada
+  const art = JSON.parse(storage.getItem('artilhariaPelada'));
+  assert.equal(art[22].gols, 1, 'artilharia restaurada');
+  // alerta foi disparado
+  assert.ok(world._alerts.some(a => /restaurando/i.test(a)), 'alerta de restauracao disparado');
+});
+
+test('remover gol: nao finaliza partida automaticamente quando atinge 2 do mesmo atleta', async () => {
+  // Antes dessa feature, registrar 2 gols do mesmo atleta chamava
+  // finalizarPartidaTempo('Fim de Jogo'). Agora NAO pode.
+  const { world, storage } = carregarApp();
+  world.registrarGol(22, 'Felipe Teo.');
+  // 2o gol do mesmo atleta -> antigamente auto-finalizava. Agora apenas marca o limite.
+  let threw = false;
+  try {
+    world.registrarGol(22, 'Felipe Teo.'); // 2o gol do mesmo
+  } catch (e) { threw = true; }
+  assert.equal(threw, false, 'registrar 2o gol do mesmo atleta nao deve quebrar');
+  // Backup deve ter 2 gols
+  const backup = JSON.parse(storage.getItem('backupPelada'));
+  assert.equal(backup.golsFeedPartida.length, 2);
+  assert.equal(backup.golsPartidaAtual, 2);
 });
