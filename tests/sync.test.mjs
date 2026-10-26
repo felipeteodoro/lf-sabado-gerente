@@ -33,6 +33,8 @@ function makeEl() {
     insertAdjacentHTML() {},
     focus() {},
     click() {},
+    querySelectorAll() { return []; },
+    querySelector() { return null; },
     innerHTML: '', innerText: '', textContent: '', value: '', className: '',
   };
   return new Proxy(base, {
@@ -69,12 +71,15 @@ function carregarApp({ fetchImpl, storageInitial = {} } = {}) {
     console: { log() {}, error() {}, warn() {}, info() {} },
     alert: (msg) => { world._alerts.push(String(msg)); },
     prompt: () => null,
-    confirm: () => true,
+    confirm: (msg) => (world._confirmAnswer !== false),
     fetch: async (url, opts) => {
       fetchCalls.push({ url: String(url), opts });
       return fetchImpl ? fetchImpl(String(url), opts) : new Response('{}');
     },
-    setTimeout: () => 0,
+    // Executa o callback sincronamente. O app.js usa setTimeout no
+    // finalizarPartidaTempo (alert 'Fim de Jogo') e no boot (hidratacao).
+    // Com no-op, o auto-finalize nunca dispara e o teste nao ve o alert.
+    setTimeout: (fn) => { fn(); return 0; },
     setInterval: () => 0,
     clearInterval() {},
     localStorage: storage,
@@ -85,12 +90,16 @@ function carregarApp({ fetchImpl, storageInitial = {} } = {}) {
       addEventListener() {},
       body: makeEl(),
       visibilityState: 'visible',
+      referrer: '',
     },
     _alerts: [],
+    _confirmAnswer: true,
   };
   world.window = {
     addEventListener: (ev, fn) => { (windowHandlers[ev] ||= []).push(fn); },
     scrollTo() {},
+    matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
+    navigator: { standalone: false },
   };
   const context = vm.createContext(world);
   vm.runInContext(APP_JS, context, { filename: 'app.js' });
@@ -568,4 +577,160 @@ test('hidratar jogadores: sync off retorna sem fazer nada', async () => {
   const r = await world.lfSyncHidratarJogadores();
   assert.equal(r, undefined, 'sem sync, retorna undefined');
   assert.equal(fetchCalls.length, 0, 'nenhum fetch feito');
+});
+
+// --- PR feat/gol-remover: remover gol da partida (UI + servidor) ----
+
+test('remover gol: otimista no local + DELETE no servidor, dbId preenchido', async () => {
+  const { world, storage, fetchCalls } = carregarApp({
+    storageInitial: { lfSyncEndpoint: 'https://lf.exemplo.dev' },
+    fetchImpl: async (url) => {
+      if (url.endsWith('/partidas')) return jsonResp({ ok: true, partida: { id: 7 } });
+      if (url.endsWith('/gols')) return jsonResp({ ok: true, gol: { id: 999 } });
+      if (url.includes('/gols/999')) return jsonResp({ ok: true });
+      return jsonResp({ ok: true });
+    },
+  });
+  // Garante que o sync tá ativo
+  assert.equal(world.lfSyncAtivo(), true);
+
+  // Registra 1 gol pra criar um item no feed
+  world.registrarGol(22, 'Felipe Teo.');
+  // Dispara o sync pendente (microtask)
+  await new Promise(r => setTimeout(r, 0));
+  // O backup (localStorage) deve ter 1 gol com dbId=999 (preenchido pelo servidor)
+  const backupAntes = JSON.parse(storage.getItem('backupPelada'));
+  assert.equal(backupAntes.golsFeedPartida.length, 1);
+  assert.equal(backupAntes.golsFeedPartida[0].dbId, 999, 'servidor devolveu id e o PWA guardou no item');
+
+  // Garante que artilharia local tem 1 gol
+  const artilharia = JSON.parse(storage.getItem('artilhariaPelada'));
+  assert.equal(artilharia[22].gols, 1);
+
+  // Remove o gol
+  await world.removerGol(0);
+
+  // localStorage zerou
+  const depois = JSON.parse(storage.getItem('artilhariaPelada')) || {};
+  assert.equal(depois[22] ? depois[22].gols : 0, 0, 'artilharia decrementou');
+  // Backup zerou
+  const backupDepois = JSON.parse(storage.getItem('backupPelada'));
+  assert.equal(backupDepois.golsFeedPartida.length, 0, 'feed zerou');
+  assert.equal(backupDepois.golsPartidaAtual, 0);
+  // DELETE foi chamado com o id certo
+  const del = fetchCalls.find(c => c.url.includes('/gols/999'));
+  assert.ok(del, 'DELETE /gols/999 foi chamado');
+  assert.equal(del.opts.method, 'DELETE');
+});
+
+test('remover gol: se servidor falhar, restaura snapshot do estado', async () => {
+  const { world, storage } = carregarApp({
+    storageInitial: { lfSyncEndpoint: 'https://lf.exemplo.dev' },
+    fetchImpl: async (url) => {
+      if (url.endsWith('/partidas')) return jsonResp({ ok: true, partida: { id: 7 } });
+      if (url.endsWith('/gols')) return jsonResp({ ok: true, gol: { id: 555 } });
+      if (url.includes('/gols/555')) return { ok: false, status: 500, json: async () => ({ ok: false }) };
+      return jsonResp({ ok: true });
+    },
+  });
+  // Registra gol
+  world.registrarGol(22, 'Felipe Teo.');
+  await new Promise(r => setTimeout(r, 0));
+  const backupAntes = JSON.parse(storage.getItem('backupPelada'));
+  assert.equal(backupAntes.golsFeedPartida[0].dbId, 555);
+
+  // Tenta remover (servidor vai dar 500 -> restaurar)
+  await world.removerGol(0);
+
+  // Estado restaurado: feed ainda tem o gol
+  const backupDepois = JSON.parse(storage.getItem('backupPelada'));
+  assert.equal(backupDepois.golsFeedPartida.length, 1, 'feed restaurado');
+  assert.equal(backupDepois.golsFeedPartida[0].nome, 'Felipe Teo.');
+  // artilharia restaurada
+  const art = JSON.parse(storage.getItem('artilhariaPelada'));
+  assert.equal(art[22].gols, 1, 'artilharia restaurada');
+  // alerta foi disparado
+  assert.ok(world._alerts.some(a => /restaurando/i.test(a)), 'alerta de restauracao disparado');
+});
+
+test('registrar gol: confirmacao cancelada NAO marca o gol', async () => {
+  // R-2026-10-25: a confirmacao "Marcar gol para X?" protege contra
+  // gol marcado no atleta errado. Cancelar = nada acontece.
+  const { world, storage } = carregarApp();
+  world.salvarBackup(); // garante o baseline do backup
+  world._confirmAnswer = false;
+  world.registrarGol(22, 'Felipe Teo.');
+  const backup = JSON.parse(storage.getItem('backupPelada'));
+  assert.equal(backup.golsFeedPartida.length, 0, 'nenhum gol no feed');
+  assert.equal(backup.golsPartidaAtual, 0, 'contador nao incrementou');
+  const art = JSON.parse(storage.getItem('artilhariaPelada') || '{}');
+  assert.equal(art[22] ? art[22].gols : 0, 0, 'artilharia nao mudou');
+});
+
+test('registrar gol: confirmacao aceita marca o gol normalmente', async () => {
+  const { world, storage } = carregarApp();
+  world.registrarGol(22, 'Felipe Teo.');
+  const backup = JSON.parse(storage.getItem('backupPelada'));
+  assert.equal(backup.golsFeedPartida.length, 1, 'gol no feed');
+  assert.equal(backup.golsPartidaAtual, 1);
+});
+
+test('auto-finalize: partida encerra com 2 gols do mesmo atleta', async () => {
+  // R-2026-10-25: volta a regra original (2 do mesmo OU 3 no total).
+  const { world, storage } = carregarApp();
+  world.registrarGol(22, 'Felipe Teo.');
+  world.registrarGol(22, 'Felipe Teo.');
+  // finalizarPartidaTempo dispara alert "Fim de Jogo" e preparaNovoJogo
+  assert.ok(
+    world._alerts.some(a => /Fim de Jogo/i.test(a)),
+    'partida finalizou com 2 gols do mesmo atleta'
+  );
+});
+
+test('auto-finalize: partida encerra com 3 gols no total', async () => {
+  const { world } = carregarApp();
+  world.registrarGol(22, 'Felipe Teo.');
+  world.registrarGol(23, 'Alex Vie.');
+  world.registrarGol(24, 'Braz');
+  assert.ok(
+    world._alerts.some(a => /Fim de Jogo/i.test(a)),
+    'partida finalizou com 3 gols no total'
+  );
+});
+
+test('editar posicao: modal abre, salva e envia PATCH no servidor', async () => {
+  const { world, storage, fetchCalls } = carregarApp({
+    storageInitial: { lfSyncEndpoint: 'https://lf.exemplo.dev' },
+    fetchImpl: async () => jsonResp({ ok: true }),
+  });
+  // Abre o modal pro Michel (id 5, linha por padrao)
+  world.abrirModalEditarPosicao(5);
+  // Marca goleiro no radio
+  const radio = world.document.getElementById('posicao-goleiro');
+  radio.checked = true;
+  await world.salvarNovaPosicao();
+
+  const backup = JSON.parse(storage.getItem('backupPelada'));
+  const michel = backup.jogadoresData.find(j => j.id == 5);
+  assert.equal(michel.posicao, 'goleiro', 'posicao atualizada localmente');
+
+  const patch = fetchCalls.find(c => c.opts && c.opts.method === 'PATCH');
+  assert.ok(patch, 'PATCH foi enviado');
+  assert.ok(patch.url.includes('/jogadores/5'), 'PATCH na rota correta: ' + patch.url);
+  const body = JSON.parse(patch.opts.body);
+  assert.equal(body.posicao, 'goleiro', 'corpo do PATCH com posicao');
+});
+
+test('editar posicao: servidor recusa -> reverte posicao local', async () => {
+  const { world, storage } = carregarApp({
+    storageInitial: { lfSyncEndpoint: 'https://lf.exemplo.dev' },
+    fetchImpl: async () => ({ ok: false, status: 500, json: async () => ({ ok: false }) }),
+  });
+  world.abrirModalEditarPosicao(5);
+  world.document.getElementById('posicao-goleiro').checked = true;
+  await world.salvarNovaPosicao();
+  const backup = JSON.parse(storage.getItem('backupPelada'));
+  const michel = backup.jogadoresData.find(j => j.id == 5);
+  assert.equal(michel.posicao, 'linha', 'posicao revertida apos falha do servidor');
+  assert.ok(world._alerts.some(a => /Restaurando/i.test(a)), 'alerta de restauracao disparado');
 });

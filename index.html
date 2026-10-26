@@ -197,6 +197,32 @@
         </div>
     </div>
 
+    <div id="modal-editar-posicao" class="fixed inset-0 bg-black/80 backdrop-blur-md z-50 hidden flex-col items-center justify-end sm:justify-center p-4">
+        <div class="glass-panel w-full max-w-md overflow-hidden transform transition-all flex flex-col">
+            <div class="p-4 border-b border-white/10 flex justify-between items-center shrink-0 bg-black/40">
+                <h3 class="font-teko text-2xl uppercase tracking-widest text-brand mt-1 drop-shadow-md">Posição do Atleta</h3>
+                <button onclick="fecharModalEditarPosicao()" class="text-zinc-500 hover:text-white text-2xl leading-none">&times;</button>
+            </div>
+            <div class="p-5 space-y-3">
+                <p class="text-sm text-zinc-400 font-bold mb-1">Posição de <span id="nome-atleta-editar-posicao" class="text-white"></span></p>
+                <label class="flex items-center gap-3 p-3 bg-black/40 border border-white/10 rounded cursor-pointer hover:bg-white/5 transition-colors">
+                    <input type="radio" name="posicao-atleta" id="posicao-linha" value="linha" class="w-4 h-4 accent-[var(--c-brand)]">
+                    <span class="font-bold text-white flex-1">Linha</span>
+                    <span class="text-xs text-zinc-500 font-bold uppercase tracking-wider">Joga em campo</span>
+                </label>
+                <label class="flex items-center gap-3 p-3 bg-black/40 border border-white/10 rounded cursor-pointer hover:bg-white/5 transition-colors">
+                    <input type="radio" name="posicao-atleta" id="posicao-goleiro" value="goleiro" class="w-4 h-4 accent-[var(--c-brand)]">
+                    <span class="font-bold text-white flex-1">Goleiro</span>
+                    <span class="text-xs text-zinc-500 font-bold uppercase tracking-wider">Defende o gol</span>
+                </label>
+            </div>
+            <div class="p-5 border-t border-white/10 flex gap-3">
+                <button type="button" onclick="fecharModalEditarPosicao()" class="flex-1 py-3 rounded-lg bg-white/5 hover:bg-white/10 text-white font-bold uppercase tracking-wider transition-colors">Cancelar</button>
+                <button type="button" onclick="salvarNovaPosicao()" class="flex-1 py-3 rounded-lg btn-primary font-bold uppercase tracking-wider transition-colors">Salvar</button>
+            </div>
+        </div>
+    </div>
+
     <!-- NAVEGAÇÃO INFERIOR -->
     <nav class="glass-panel rounded-none border-b-0 border-l-0 border-r-0 border-t border-white/10 fixed bottom-0 w-full z-40">
         <div class="max-w-3xl mx-auto flex justify-around">
@@ -215,7 +241,7 @@
         </div>
     </nav>
 
-    <script src="app.js?v=48"></script>
+    <script src="app.js?v=50"></script>
     <script>
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => {
