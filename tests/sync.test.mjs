@@ -71,12 +71,15 @@ function carregarApp({ fetchImpl, storageInitial = {} } = {}) {
     console: { log() {}, error() {}, warn() {}, info() {} },
     alert: (msg) => { world._alerts.push(String(msg)); },
     prompt: () => null,
-    confirm: () => true,
+    confirm: (msg) => (world._confirmAnswer !== false),
     fetch: async (url, opts) => {
       fetchCalls.push({ url: String(url), opts });
       return fetchImpl ? fetchImpl(String(url), opts) : new Response('{}');
     },
-    setTimeout: () => 0,
+    // Executa o callback sincronamente. O app.js usa setTimeout no
+    // finalizarPartidaTempo (alert 'Fim de Jogo') e no boot (hidratacao).
+    // Com no-op, o auto-finalize nunca dispara e o teste nao ve o alert.
+    setTimeout: (fn) => { fn(); return 0; },
     setInterval: () => 0,
     clearInterval() {},
     localStorage: storage,
@@ -87,12 +90,16 @@ function carregarApp({ fetchImpl, storageInitial = {} } = {}) {
       addEventListener() {},
       body: makeEl(),
       visibilityState: 'visible',
+      referrer: '',
     },
     _alerts: [],
+    _confirmAnswer: true,
   };
   world.window = {
     addEventListener: (ev, fn) => { (windowHandlers[ev] ||= []).push(fn); },
     scrollTo() {},
+    matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
+    navigator: { standalone: false },
   };
   const context = vm.createContext(world);
   vm.runInContext(APP_JS, context, { filename: 'app.js' });
@@ -646,19 +653,84 @@ test('remover gol: se servidor falhar, restaura snapshot do estado', async () =>
   assert.ok(world._alerts.some(a => /restaurando/i.test(a)), 'alerta de restauracao disparado');
 });
 
-test('remover gol: nao finaliza partida automaticamente quando atinge 2 do mesmo atleta', async () => {
-  // Antes dessa feature, registrar 2 gols do mesmo atleta chamava
-  // finalizarPartidaTempo('Fim de Jogo'). Agora NAO pode.
+test('registrar gol: confirmacao cancelada NAO marca o gol', async () => {
+  // R-2026-10-25: a confirmacao "Marcar gol para X?" protege contra
+  // gol marcado no atleta errado. Cancelar = nada acontece.
+  const { world, storage } = carregarApp();
+  world.salvarBackup(); // garante o baseline do backup
+  world._confirmAnswer = false;
+  world.registrarGol(22, 'Felipe Teo.');
+  const backup = JSON.parse(storage.getItem('backupPelada'));
+  assert.equal(backup.golsFeedPartida.length, 0, 'nenhum gol no feed');
+  assert.equal(backup.golsPartidaAtual, 0, 'contador nao incrementou');
+  const art = JSON.parse(storage.getItem('artilhariaPelada') || '{}');
+  assert.equal(art[22] ? art[22].gols : 0, 0, 'artilharia nao mudou');
+});
+
+test('registrar gol: confirmacao aceita marca o gol normalmente', async () => {
   const { world, storage } = carregarApp();
   world.registrarGol(22, 'Felipe Teo.');
-  // 2o gol do mesmo atleta -> antigamente auto-finalizava. Agora apenas marca o limite.
-  let threw = false;
-  try {
-    world.registrarGol(22, 'Felipe Teo.'); // 2o gol do mesmo
-  } catch (e) { threw = true; }
-  assert.equal(threw, false, 'registrar 2o gol do mesmo atleta nao deve quebrar');
-  // Backup deve ter 2 gols
   const backup = JSON.parse(storage.getItem('backupPelada'));
-  assert.equal(backup.golsFeedPartida.length, 2);
-  assert.equal(backup.golsPartidaAtual, 2);
+  assert.equal(backup.golsFeedPartida.length, 1, 'gol no feed');
+  assert.equal(backup.golsPartidaAtual, 1);
+});
+
+test('auto-finalize: partida encerra com 2 gols do mesmo atleta', async () => {
+  // R-2026-10-25: volta a regra original (2 do mesmo OU 3 no total).
+  const { world, storage } = carregarApp();
+  world.registrarGol(22, 'Felipe Teo.');
+  world.registrarGol(22, 'Felipe Teo.');
+  // finalizarPartidaTempo dispara alert "Fim de Jogo" e preparaNovoJogo
+  assert.ok(
+    world._alerts.some(a => /Fim de Jogo/i.test(a)),
+    'partida finalizou com 2 gols do mesmo atleta'
+  );
+});
+
+test('auto-finalize: partida encerra com 3 gols no total', async () => {
+  const { world } = carregarApp();
+  world.registrarGol(22, 'Felipe Teo.');
+  world.registrarGol(23, 'Alex Vie.');
+  world.registrarGol(24, 'Braz');
+  assert.ok(
+    world._alerts.some(a => /Fim de Jogo/i.test(a)),
+    'partida finalizou com 3 gols no total'
+  );
+});
+
+test('editar posicao: modal abre, salva e envia PATCH no servidor', async () => {
+  const { world, storage, fetchCalls } = carregarApp({
+    storageInitial: { lfSyncEndpoint: 'https://lf.exemplo.dev' },
+    fetchImpl: async () => jsonResp({ ok: true }),
+  });
+  // Abre o modal pro Michel (id 5, linha por padrao)
+  world.abrirModalEditarPosicao(5);
+  // Marca goleiro no radio
+  const radio = world.document.getElementById('posicao-goleiro');
+  radio.checked = true;
+  await world.salvarNovaPosicao();
+
+  const backup = JSON.parse(storage.getItem('backupPelada'));
+  const michel = backup.jogadoresData.find(j => j.id == 5);
+  assert.equal(michel.posicao, 'goleiro', 'posicao atualizada localmente');
+
+  const patch = fetchCalls.find(c => c.opts && c.opts.method === 'PATCH');
+  assert.ok(patch, 'PATCH foi enviado');
+  assert.ok(patch.url.includes('/jogadores/5'), 'PATCH na rota correta: ' + patch.url);
+  const body = JSON.parse(patch.opts.body);
+  assert.equal(body.posicao, 'goleiro', 'corpo do PATCH com posicao');
+});
+
+test('editar posicao: servidor recusa -> reverte posicao local', async () => {
+  const { world, storage } = carregarApp({
+    storageInitial: { lfSyncEndpoint: 'https://lf.exemplo.dev' },
+    fetchImpl: async () => ({ ok: false, status: 500, json: async () => ({ ok: false }) }),
+  });
+  world.abrirModalEditarPosicao(5);
+  world.document.getElementById('posicao-goleiro').checked = true;
+  await world.salvarNovaPosicao();
+  const backup = JSON.parse(storage.getItem('backupPelada'));
+  const michel = backup.jogadoresData.find(j => j.id == 5);
+  assert.equal(michel.posicao, 'linha', 'posicao revertida apos falha do servidor');
+  assert.ok(world._alerts.some(a => /Restaurando/i.test(a)), 'alerta de restauracao disparado');
 });
