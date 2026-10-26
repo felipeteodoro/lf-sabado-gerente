@@ -726,11 +726,13 @@ test('editar posicao: servidor recusa -> reverte posicao local', async () => {
     storageInitial: { lfSyncEndpoint: 'https://lf.exemplo.dev' },
     fetchImpl: async () => ({ ok: false, status: 500, json: async () => ({ ok: false }) }),
   });
-  world.abrirModalEditarPosicao(5);
+  // Usa o id 22 (Felipe Teo.), que comeca como 'linha' no hardcoded.
+  // (O id 5 - Michel - ja e 'goleiro' no hardcoded desde v51.)
+  world.abrirModalEditarPosicao(22);
   world.document.getElementById('posicao-goleiro').checked = true;
   await world.salvarNovaPosicao();
   const backup = JSON.parse(storage.getItem('backupPelada'));
-  const michel = backup.jogadoresData.find(j => j.id == 5);
-  assert.equal(michel.posicao, 'linha', 'posicao revertida apos falha do servidor');
+  const felipe = backup.jogadoresData.find(j => j.id == 22);
+  assert.equal(felipe.posicao, 'linha', 'posicao revertida apos falha do servidor');
   assert.ok(world._alerts.some(a => /Restaurando/i.test(a)), 'alerta de restauracao disparado');
 });
