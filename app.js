@@ -1,3 +1,9 @@
+// Chave do localStorage com o endpoint de sincronização.
+// Declarada aqui (topo) porque init() dispara a hidratação em setTimeout(0)
+// e precisa dela já inicializada - se fosse declarada depois, daria
+// ReferenceError (TDZ) quando o timer dispara antes do fim do script.
+const LF_SYNC_ENDPOINT_KEY = 'lfSyncEndpoint';
+
 let jogadoresData = [
     { id: 1, nome: "Râneer", posicao: "linha", presente: false, foto: "fotos/raneer_v2.jpg" },
     { id: 2, nome: "Alex Vie.", posicao: "linha", presente: false, foto: "fotos/alex_vie_v2.jpg" },
@@ -97,7 +103,7 @@ function getAvatarUrl(nome) {
 // Cache-buster nas URLs de foto. Bumpa junto com o sw.js pra forçar
 // o navegador a re-baixar a foto (quebra qualquer cache HTTP do Chrome
 // que tenha prendado uma resposta 404 antiga).
-const FOTOS_VERSION = '49';
+const FOTOS_VERSION = '50';
 function fotoUrl(path) {
     if (!path) return path;
     return path + '?v=' + FOTOS_VERSION;
@@ -227,7 +233,9 @@ function renderLista() {
             <img src="${fotoUrl(jogador.foto)}" onerror="this.onerror=null; this.src=getAvatarUrl('${jogador.nome}')" alt="${jogador.nome}" class="w-10 h-10 object-cover rounded-md mr-3 border border-white/10 bg-black/50">
             <div class="flex flex-col flex-1 overflow-hidden">
                 <span class="font-bold text-sm leading-tight truncate text-white">${jogador.nome}</span>
-                <span class="position-badge border px-1.5 py-[1px] rounded mt-1 w-max ${badgeColor}">${badgeText}</span>
+                <button type="button" data-edit-posicao="${jogador.id}" class="position-badge border px-1.5 py-[1px] rounded mt-1 w-max ${badgeColor} hover:opacity-80 transition-opacity inline-flex items-center gap-1" title="Alterar posicao (linha/goleiro)">
+                    ${badgeText}<i class="fa-solid fa-gear text-[9px] opacity-60"></i>
+                </button>
             </div>
             <div class="ml-2 shrink-0">
                 <div class="w-5 h-5 rounded border flex items-center justify-center transition-colors ${jogador.presente ? 'border-[var(--c-brand-light)] bg-[var(--c-brand)]' : 'border-white/10 bg-black/40'}">
@@ -237,6 +245,62 @@ function renderLista() {
         `;
         container.appendChild(card);
     });
+
+    // Botao ⚙️ do badge de posicao: abre o editor linha/goleiro.
+    // stopPropagation evita que o click chegue no card e altere a presenca.
+    container.querySelectorAll('[data-edit-posicao]').forEach(btn => {
+        btn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            abrirModalEditarPosicao(Number(btn.dataset.editPosicao));
+        });
+    });
+}
+
+// === EDITAR POSICAO (linha/goleiro) ===
+let jogadorEditandoPosicao = null;
+
+function abrirModalEditarPosicao(id) {
+    const jogador = jogadoresData.find(j => j.id == id);
+    if (!jogador) return;
+    jogadorEditandoPosicao = jogador;
+    const modal = document.getElementById('modal-editar-posicao');
+    if (!modal) return;
+    const radioLinha = document.getElementById('posicao-linha');
+    const radioGoleiro = document.getElementById('posicao-goleiro');
+    if (radioLinha) radioLinha.checked = jogador.posicao !== 'goleiro';
+    if (radioGoleiro) radioGoleiro.checked = jogador.posicao === 'goleiro';
+    const nomeEl = document.getElementById('nome-atleta-editar-posicao');
+    if (nomeEl) nomeEl.textContent = jogador.nome;
+    modal.classList.remove('hidden');
+}
+
+function fecharModalEditarPosicao() {
+    const modal = document.getElementById('modal-editar-posicao');
+    if (modal) modal.classList.add('hidden');
+    jogadorEditandoPosicao = null;
+}
+
+async function salvarNovaPosicao() {
+    const jogador = jogadorEditandoPosicao;
+    if (!jogador) return;
+    const goleiroEl = document.getElementById('posicao-goleiro');
+    const novaPosicao = (goleiroEl && goleiroEl.checked) ? 'goleiro' : 'linha';
+    const anterior = jogador.posicao;
+
+    // Otimista: aplica local, so reverte se o servidor recusar.
+    jogador.posicao = novaPosicao;
+    renderLista();
+    salvarBackup();
+    fecharModalEditarPosicao();
+
+    if (!lfSyncAtivo()) return;
+    const r = await lfSyncEnviarPatch('/jogadores/' + jogador.id, { posicao: novaPosicao });
+    if (!r.ok) {
+        jogador.posicao = anterior;
+        renderLista();
+        salvarBackup();
+        alert('Não foi possível salvar a posição no servidor. Restaurando.');
+    }
 }
 
 function togglePresenca(id) {
@@ -847,6 +911,11 @@ let vistaArtilhariaAtual = 'hoje';
 let artilhariaGeralCache = null;
 
 function registrarGol(jogadorId, jogadorNome) {
+    // R-2026-10-25: confirma o atleta ANTES de registrar. Mata o gol marcado
+    // no jogador errado (a maior fonte de erro na artilharia). Cancelar = nada
+    // acontece (nem local, nem servidor).
+    if (!confirm(`Marcar gol para ${jogadorNome}?`)) return;
+
     let golsAtuaisDesteJogador = golsJogadorPartida[jogadorId] || 0;
 
     if (golsAtuaisDesteJogador >= 2) {
@@ -881,10 +950,15 @@ function registrarGol(jogadorId, jogadorNome) {
     lfSyncRegistrarGol(jogadorId, jogadorNome, minutoGolAtual(), golsFeedPartida.length - 1);
     lfSyncInvalidarCacheGeral();
 
-    // NOTA (R-2026-10-17): não finalizar partida automaticamente.
-    // Critério de "2 gols do mesmo atleta" ou "3 gols no total" apenas
-    // sinaliza na UI; o usuário encerra manualmente (ou inicia nova partida).
-    // Permite corrigir marcação errada SEM perder o estado.
+    // R-2026-10-25: volta o auto-finalizar (regra original do app).
+    // A partida encerra em 2 gols do mesmo atleta OU 3 gols no total.
+    // A confirmacao acima (confirm "Marcar gol para X?") e a lixeira no feed
+    // (PR #41) resolvem o risco de perder o estado por erro de marcacao.
+    if (golsJogadorPartida[jogadorId] >= 2) {
+        finalizarPartidaTempo("Fim de Jogo");
+    } else if (golsPartidaAtual >= 3) {
+        finalizarPartidaTempo("Fim de Jogo");
+    }
 }
 
 function renderArtilharia() {
@@ -1097,7 +1171,6 @@ setTimeout(mostrarBannerInstall, 2600);
 // sem endpoint configurado, o app funciona 100% como antes.
 // localStorage continua sendo a fonte da verdade offline.
 // ============================================================
-const LF_SYNC_ENDPOINT_KEY = 'lfSyncEndpoint';
 let lfSyncFila = JSON.parse(localStorage.getItem('lfSyncFila') || '[]');
 
 function lfSyncAtivo() {
@@ -1137,6 +1210,28 @@ async function lfSyncEnviar(path, body) {
         lfSyncFila.push({ path, body });
         localStorage.setItem('lfSyncFila', JSON.stringify(lfSyncFila));
         return { ok: false, reason: 'offline', queued: true };
+    }
+}
+
+// PATCH no servidor (editar jogador existente). Retorna {ok, status, body}.
+async function lfSyncEnviarPatch(path, body) {
+    if (!lfSyncAtivo()) return { ok: false, reason: 'sync-off' };
+    const url = localStorage.getItem(LF_SYNC_ENDPOINT_KEY);
+    try {
+        const resp = await fetch(url + path, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        if (!resp.ok) {
+            const texto = await resp.text().catch(() => '');
+            console.warn('[lfSyncEnviarPatch] ' + path + ' -> HTTP ' + resp.status + ': ' + texto);
+            return { ok: false, status: resp.status, body: texto };
+        }
+        return { ok: true };
+    } catch (err) {
+        console.warn('[lfSyncEnviarPatch] ' + path + ' offline:', err && err.message);
+        return { ok: false, reason: 'offline' };
     }
 }
 
