@@ -109,6 +109,12 @@ body {
     body {
         padding-bottom: env(safe-area-inset-bottom);
     }
+    /* iOS standalone com black-translucent: o conteudo sobe ate o topo da tela
+       e a status bar/notch cobre o header. O header ganha o inset superior
+       (o fundo glass-panel continua preenchendo essa faixa). */
+    header {
+        padding-top: env(safe-area-inset-top);
+    }
     /* nav inferior fixa precisa subir o home indicator */
     nav[class*="fixed"], .nav-inferior {
         padding-bottom: calc(env(safe-area-inset-bottom) + 0.5rem);
