@@ -1435,3 +1435,38 @@ function lfSyncInvalidarCacheGeral() {
     artilhariaGeralCache = null;
     if (vistaArtilhariaAtual === 'geral') renderArtilharia();
 }
+
+// Teclado virtual (iOS/Android): o modal é fixo e alinhado embaixo, então o
+// teclado cobria o campo de busca. Mede o espaço ocupado pelo teclado via
+// visualViewport e expõe em --kb; os modais usam isso como padding-bottom.
+(function () {
+    const vv = window.visualViewport;
+    const root = document.documentElement;
+
+    function atualizarTeclado() {
+        if (!vv) return;
+        const kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+        root.style.setProperty('--kb', kb + 'px');
+    }
+
+    if (vv) {
+        vv.addEventListener('resize', atualizarTeclado);
+        vv.addEventListener('scroll', atualizarTeclado);
+    }
+
+    document.addEventListener('focusin', function (e) {
+        const el = e.target;
+        if (!el || !el.matches || !el.matches('input[type="text"], input:not([type]), textarea')) return;
+        setTimeout(function () {
+            el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        }, 300);
+    });
+
+    document.addEventListener('focusout', function () {
+        setTimeout(function () {
+            if (!document.activeElement || document.activeElement === document.body) {
+                root.style.setProperty('--kb', '0px');
+            }
+        }, 100);
+    });
+})();
