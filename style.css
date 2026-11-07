@@ -136,3 +136,8 @@ body {
 main {
     padding-bottom: 5.5rem !important;
 }
+
+/* Teclado aberto: modais fixos sobem pelo espaço ocupado pelo teclado (--kb, ver app.js) */
+[id^="modal-"].fixed {
+    padding-bottom: calc(1rem + var(--kb, 0px));
+}
