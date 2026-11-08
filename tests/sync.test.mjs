@@ -736,3 +736,183 @@ test('editar posicao: servidor recusa -> reverte posicao local', async () => {
   assert.equal(felipe.posicao, 'linha', 'posicao revertida apos falha do servidor');
   assert.ok(world._alerts.some(a => /Restaurando/i.test(a)), 'alerta de restauracao disparado');
 });
+
+// --- Gols pendentes (caso 2026-11-07: gols marcados sem sync nunca subiam) ---
+
+// Servidor fake com estado: conta os gols recebidos no dia, pra a
+// reconciliação poder rodar várias vezes (boot + chamada do teste).
+function servidorFake({ hoje = {}, partida = { id: 27 }, partidaHoje = 31 } = {}) {
+  const golsHoje = { ...hoje }; // { '1': 2 }
+  const recebidos = [];
+  let proximoGolId = 1000;
+  const fetchImpl = async (url, opts) => {
+    if (url.endsWith('/estado')) {
+      return jsonResp({
+        ok: true, partida, jogadores: [], gols: [], artilharia: [],
+        artilharia_hoje: Object.entries(golsHoje).map(([id, gols]) => ({ id, nome: 'x', gols })),
+      });
+    }
+    if (url.endsWith('/gols') && opts && opts.method === 'POST') {
+      const body = JSON.parse(opts.body);
+      recebidos.push(body);
+      golsHoje[body.jogador_id] = (golsHoje[body.jogador_id] || 0) + 1;
+      return jsonResp({ ok: true, partida_id: partidaHoje, gol: { id: proximoGolId++ } });
+    }
+    if (url.endsWith('/partidas')) return jsonResp({ ok: true, partida: { id: partidaHoje } });
+    return jsonResp({ ok: true });
+  };
+  return { fetchImpl, recebidos, golsHoje };
+}
+
+// O boot dispara lfSyncSincronizarTudo() sem await — deixa ele terminar.
+const esperarBoot = async () => {
+  for (let i = 0; i < 30; i++) await new Promise((r) => setImmediate(r));
+};
+
+test('gols pendentes: boot sobe só a diferença local - servidor do dia', async () => {
+  const srv = servidorFake({ hoje: { '1': 1 } });
+  const { storage } = carregarApp({
+    storageInitial: {
+      lfSyncEndpoint: 'https://lf.exemplo.dev',
+      artilhariaPelada: JSON.stringify({
+        1: { nome: 'Râneer', gols: 3, foto: '' },
+        22: { nome: 'Felipe Teo.', gols: 2, foto: '' },
+      }),
+    },
+    fetchImpl: srv.fetchImpl,
+  });
+  await esperarBoot();
+
+  assert.equal(srv.recebidos.length, 4, '2 do Râneer + 2 do Felipe');
+  assert.equal(srv.recebidos.filter((g) => g.jogador_id === '1').length, 2);
+  assert.equal(srv.recebidos.filter((g) => g.jogador_id === '22').length, 2);
+  assert.ok(srv.recebidos.every((g) => g.minuto === null), 'minuto reconstruído = null');
+  // Partida que o servidor usou fica memorizada (não manda a velha de novo)
+  assert.equal(storage.getItem('lfSyncPartidaId'), '31');
+});
+
+test('gols pendentes: rodar de novo não duplica (idempotente)', async () => {
+  const srv = servidorFake();
+  const { world } = carregarApp({
+    storageInitial: {
+      lfSyncEndpoint: 'https://lf.exemplo.dev',
+      artilhariaPelada: JSON.stringify({ 1: { nome: 'Râneer', gols: 2, foto: '' } }),
+    },
+    fetchImpl: srv.fetchImpl,
+  });
+  await esperarBoot();
+  const r = await world.lfSyncEnviarGolsPendentes();
+  await world.lfSyncSincronizarTudo();
+
+  assert.equal(srv.recebidos.length, 2);
+  assert.equal(r.enviados, 0);
+});
+
+test('gols pendentes: servidor com mais gols que o local não envia nada', async () => {
+  const srv = servidorFake({ hoje: { '1': 5 } });
+  carregarApp({
+    storageInitial: {
+      lfSyncEndpoint: 'https://lf.exemplo.dev',
+      artilhariaPelada: JSON.stringify({ 1: { nome: 'Râneer', gols: 2, foto: '' } }),
+    },
+    fetchImpl: srv.fetchImpl,
+  });
+  await esperarBoot();
+  assert.equal(srv.recebidos.length, 0);
+});
+
+test('gols pendentes: com gol em envio, não reconcilia (evita duplicar)', async () => {
+  const srv = servidorFake();
+  let liberarGol;
+  const golTravado = new Promise((r) => { liberarGol = r; });
+  const { world, storage } = carregarApp({
+    storageInitial: { lfSyncEndpoint: 'https://lf.exemplo.dev', lfSyncPartidaId: '31' },
+    fetchImpl: async (url, opts) => {
+      if (url.endsWith('/gols')) await golTravado; // POST do gol "na rede"
+      return srv.fetchImpl(url, opts);
+    },
+  });
+  await esperarBoot();
+
+  world.registrarGol(22, 'Felipe Teo.'); // local = 1, POST pendurado
+  const r = await world.lfSyncEnviarGolsPendentes();
+  assert.equal(r.enviados, 0);
+  assert.equal(r.reason, 'gol-em-voo');
+
+  liberarGol();
+  await esperarBoot();
+  assert.equal(srv.recebidos.length, 1, 'só o gol original chegou');
+  assert.equal(JSON.parse(storage.getItem('artilhariaPelada'))[22].gols, 1);
+});
+
+test('gols pendentes: gol reconciliado ganha dbId no feed (lixeira apaga no servidor)', async () => {
+  const srv = servidorFake();
+  const { world, storage } = carregarApp({
+    storageInitial: { lfSyncEndpoint: 'https://lf.exemplo.dev' },
+    fetchImpl: async (url, opts) => {
+      // Simula o POST do gol falhando na hora (sem sinal na quadra)
+      if (url.endsWith('/gols') && world._semRede) throw new TypeError('Failed to fetch');
+      return srv.fetchImpl(url, opts);
+    },
+  });
+  await esperarBoot();
+  world._semRede = true;
+  world.registrarGol(22, 'Felipe Teo.');
+  await esperarBoot();
+  assert.equal(srv.recebidos.length, 0);
+  const feed = () => JSON.parse(storage.getItem('backupPelada')).golsFeedPartida;
+  assert.equal(feed()[0].dbId, null);
+
+  world._semRede = false;
+  const r = await world.lfSyncEnviarGolsPendentes();
+  assert.equal(r.enviados, 1);
+  assert.equal(feed()[0].dbId, 1000);
+});
+
+test('botão Sync: além de configurar, sobe os gols de hoje e avisa quantos', async () => {
+  const srv = servidorFake();
+  const { world } = carregarApp({
+    storageInitial: {
+      // Sync desligado durante a pelada: 3 gols só no aparelho
+      artilhariaPelada: JSON.stringify({ 1: { nome: 'Râneer', gols: 3, foto: '' } }),
+    },
+    fetchImpl: srv.fetchImpl,
+  });
+  await esperarBoot();
+  assert.equal(srv.recebidos.length, 0, 'sync off: nada sai');
+
+  world.prompt = () => 'https://lf.exemplo.dev';
+  world.lfSyncToggleConfig();
+  await esperarBoot();
+
+  assert.equal(srv.recebidos.length, 3);
+  assert.ok(world._alerts.some((a) => /3 gol\(s\) de hoje/.test(a)), 'avisa quantos subiram');
+});
+
+test('boot com sync ativo esvazia a fila sozinho (sem esperar evento online)', async () => {
+  const srv = servidorFake();
+  const { storage, fetchCalls } = carregarApp({
+    storageInitial: {
+      lfSyncEndpoint: 'https://lf.exemplo.dev',
+      lfSyncFila: JSON.stringify([{ path: '/presencas', body: { jogadores_ids: [1, 22] } }]),
+    },
+    fetchImpl: srv.fetchImpl,
+  });
+  await esperarBoot();
+  assert.equal(fetchCalls.filter((c) => c.url.endsWith('/presencas')).length, 1);
+  assert.equal(JSON.parse(storage.getItem('lfSyncFila')).length, 0);
+});
+
+test('flush concorrente (boot + online) não manda a fila em dobro', async () => {
+  const srv = servidorFake();
+  const { world, fetchCalls } = carregarApp({
+    storageInitial: {
+      lfSyncEndpoint: 'https://lf.exemplo.dev',
+      lfSyncFila: JSON.stringify([{ path: '/presencas', body: { jogadores_ids: [1] } }]),
+    },
+    fetchImpl: srv.fetchImpl,
+  });
+  await Promise.all([world.lfSyncFlush(), world.lfSyncFlush()]);
+  await esperarBoot();
+  assert.equal(fetchCalls.filter((c) => c.url.endsWith('/presencas')).length, 1);
+});

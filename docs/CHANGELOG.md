@@ -12,6 +12,7 @@ Mudanças notáveis do projeto, em ordem inversa. (Inspirado em Keep a Changelog
   - `docs/STATUS.md` — decisões em aberto e dívidas técnicas
 
 ### Fixed
+- Sync: gols marcados com o sync desligado ou sem sinal nunca chegavam no servidor (caso 2026-11-07). Agora o app reconcilia a artilharia do dia (local − servidor) ao abrir, quando a conexão volta e ao tocar em Sync; a fila offline também é esvaziada ao abrir o app, e flushes concorrentes não duplicam envios
 - Busca no modal de gol agora ignora acentos (`Rane` → `Râneer`, `Fabio` → `Fábio`)
 
 ## [1.0.0] — 2026-09-05 (commit `d819ec1`)
