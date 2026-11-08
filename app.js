@@ -4,6 +4,12 @@
 // ReferenceError (TDZ) quando o timer dispara antes do fim do script.
 const LF_SYNC_ENDPOINT_KEY = 'lfSyncEndpoint';
 
+// Controle de concorrência do sync (ver lfSyncFlush / lfSyncEnviarGolsPendentes).
+// Gols em envio: a reconciliação espera eles acabarem pra não duplicar.
+let lfSyncGolsEmVoo = 0;
+let lfSyncFlushEmAndamento = null;
+let lfSyncReconciliacaoEmAndamento = null;
+
 let jogadoresData = [
     { id: 1, nome: "Râneer", posicao: "linha", presente: false, foto: "fotos/raneer_v2.jpg" },
     { id: 2, nome: "Alex Vie.", posicao: "linha", presente: false, foto: "fotos/alex_vie_v2.jpg" },
@@ -104,7 +110,7 @@ function getAvatarUrl(nome) {
 // Cache-buster nas URLs de foto. Bumpa junto com o sw.js pra forçar
 // o navegador a re-baixar a foto (quebra qualquer cache HTTP do Chrome
 // que tenha prendado uma resposta 404 antiga).
-const FOTOS_VERSION = '51';
+const FOTOS_VERSION = '55';
 function fotoUrl(path) {
     if (!path) return path;
     return path + '?v=' + FOTOS_VERSION;
@@ -1236,7 +1242,17 @@ async function lfSyncEnviarPatch(path, body) {
     }
 }
 
-async function lfSyncFlush() {
+// Dois flushes ao mesmo tempo (boot + evento online) mandariam a fila em
+// dobro — quem chega durante um flush espera o que já está rodando.
+function lfSyncFlush() {
+    if (!lfSyncFlushEmAndamento) {
+        lfSyncFlushEmAndamento = lfSyncFlushExecutar()
+            .finally(() => { lfSyncFlushEmAndamento = null; });
+    }
+    return lfSyncFlushEmAndamento;
+}
+
+async function lfSyncFlushExecutar() {
     if (!lfSyncAtivo() || lfSyncFila.length === 0) return;
     const url = localStorage.getItem(LF_SYNC_ENDPOINT_KEY);
     const restantes = [];
@@ -1282,7 +1298,104 @@ async function lfSyncCarregarArtilharia() {
     }
 }
 
-window.addEventListener('online', lfSyncFlush);
+// Reconciliação do dia: envia ao servidor os gols que ESTE aparelho tem em
+// artilhariaPelada e o servidor não tem em artilharia_hoje.
+// Caso real (2026-11-07): gols marcados com o sync desligado (ou sem sinal)
+// nunca subiam — o POST /gols falhava em silêncio e o botão Sync só baixava.
+// Por diferença de contagem → idempotente: rodar de novo não duplica.
+// Gols reconstruídos assim vão com minuto null (só a contagem é confiável).
+function lfSyncEnviarGolsPendentes() {
+    if (!lfSyncReconciliacaoEmAndamento) {
+        lfSyncReconciliacaoEmAndamento = lfSyncEnviarGolsPendentesExecutar()
+            .finally(() => { lfSyncReconciliacaoEmAndamento = null; });
+    }
+    return lfSyncReconciliacaoEmAndamento;
+}
+
+async function lfSyncEnviarGolsPendentesExecutar() {
+    if (!lfSyncAtivo()) return { ok: false, enviados: 0, reason: 'sync-off' };
+    // Gol sendo enviado agora ainda não aparece no servidor: contar a
+    // diferença neste momento duplicaria ele. Fica pra próxima rodada.
+    if (lfSyncGolsEmVoo > 0) return { ok: false, enviados: 0, reason: 'gol-em-voo' };
+    const url = localStorage.getItem(LF_SYNC_ENDPOINT_KEY);
+    let enviados = 0;
+    // Foto do local ANTES de ler o servidor: um gol marcado durante o fetch
+    // fica fora da foto e nunca é contado em dobro (no máximo sobe na próxima).
+    const local = JSON.parse(localStorage.getItem('artilhariaPelada')) || {};
+    try {
+        const resp = await fetch(url + '/estado');
+        const dados = await resp.json();
+        if (!dados || !dados.ok) return { ok: false, enviados: 0 };
+
+        const noServidor = {};
+        for (const a of (dados.artilharia_hoje || [])) noServidor[String(a.id)] = a.gols || 0;
+
+        let partidaId = localStorage.getItem('lfSyncPartidaId')
+            || (dados.partida && dados.partida.id ? String(dados.partida.id) : null);
+
+        for (const [id, item] of Object.entries(local)) {
+            const faltam = ((item && item.gols) || 0) - (noServidor[String(id)] || 0);
+            if (faltam <= 0) continue;
+            // Jogador antes dos gols (FK gols.jogador_id). Server é autoridade
+            // no nome: /jogadores ignora se já existe.
+            await lfSyncEnviar('/jogadores', { id: String(id), nome: item.nome });
+            for (let i = 0; i < faltam; i++) {
+                if (!partidaId) {
+                    const rp = await fetch(url + '/partidas', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+                    const dp = await rp.json();
+                    if (!dp || !dp.ok) return { ok: false, enviados };
+                    partidaId = String(dp.partida.id);
+                    localStorage.setItem('lfSyncPartidaId', partidaId);
+                }
+                const rg = await fetch(url + '/gols', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ partida_id: Number(partidaId), jogador_id: String(id), time: 'time1', minuto: null })
+                });
+                const dg = await rg.json().catch(() => null);
+                if (!rg.ok || !dg || !dg.ok) return { ok: false, enviados };
+                enviados++;
+                lfSyncGuardarPartidaDoServidor(dg);
+                lfSyncVincularDbId(id, dg);
+            }
+        }
+        if (enviados > 0) lfSyncInvalidarCacheGeral();
+        return { ok: true, enviados };
+    } catch (err) {
+        // Offline: tenta de novo no próximo boot / evento online / botão Sync
+        console.warn('[lfSyncEnviarGolsPendentes] falhou:', err && err.message);
+        return { ok: false, enviados };
+    }
+}
+
+// O servidor reencaminha o gol pra partida de HOJE quando a lfSyncPartidaId
+// local é de outro dia — guarda a que ele usou pra não mandar a velha sempre.
+function lfSyncGuardarPartidaDoServidor(dadosGol) {
+    if (dadosGol && dadosGol.partida_id) {
+        localStorage.setItem('lfSyncPartidaId', String(dadosGol.partida_id));
+    }
+}
+
+// Gol reconciliado: liga o id do servidor ao primeiro item do feed da partida
+// atual desse jogador que ainda não tem dbId (permite a lixeira apagar no servidor).
+function lfSyncVincularDbId(jogadorId, dadosGol) {
+    if (!dadosGol || !dadosGol.gol || typeof golsFeedPartida === 'undefined') return;
+    const item = golsFeedPartida.find(g => String(g.id) === String(jogadorId) && (g.dbId === null || g.dbId === undefined));
+    if (!item) return;
+    item.dbId = dadosGol.gol.id;
+    if (typeof salvarBackup === 'function') salvarBackup();
+}
+
+// Boot / volta da conexão: fila primeiro, depois a reconciliação do dia,
+// por fim a hidratação (que só SOBE os totais locais).
+async function lfSyncSincronizarTudo() {
+    if (!lfSyncAtivo()) return;
+    await lfSyncFlush();
+    await lfSyncEnviarGolsPendentes();
+    await lfSyncCarregarArtilharia();
+}
+
+window.addEventListener('online', lfSyncSincronizarTudo);
 
 // === Config do sync via prompt simples (sem dependência de UI nova) ===
 function lfSyncToggleConfig() {
@@ -1299,7 +1412,18 @@ function lfSyncToggleConfig() {
     if (lfSyncConfigurar(limpo)) {
         if (lfSyncAtivo()) {
             alert('Sync ativado: ' + limpo);
-            lfSyncCarregarArtilharia();
+            // O botão Sync também SOBE os gols de hoje que não chegaram no
+            // servidor (antes só baixava — gols marcados offline se perdiam).
+            lfSyncFlush()
+                .then(() => lfSyncEnviarGolsPendentes())
+                .then((r) => {
+                    if (r && r.enviados > 0) {
+                        alert(r.enviados + ' gol(s) de hoje que não estavam no servidor foram enviados.');
+                    } else if (r && !r.ok && r.reason !== 'gol-em-voo') {
+                        alert('Não foi possível enviar os gols de hoje agora. O app tenta de novo quando a conexão voltar.');
+                    }
+                    return lfSyncCarregarArtilharia();
+                });
         } else {
             alert('Sync desligado. O app continua 100% offline como antes.');
         }
@@ -1312,6 +1436,7 @@ async function lfSyncRegistrarGol(jogadorId, jogadorNome, minuto, feedIndex) {
     if (!lfSyncAtivo()) return;
     const url = localStorage.getItem(LF_SYNC_ENDPOINT_KEY);
     let partidaId = localStorage.getItem('lfSyncPartidaId');
+    lfSyncGolsEmVoo++;
     try {
         if (!partidaId) {
             const resp = await fetch(url + '/partidas', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
@@ -1326,6 +1451,7 @@ async function lfSyncRegistrarGol(jogadorId, jogadorNome, minuto, feedIndex) {
             body: JSON.stringify({ partida_id: Number(partidaId), jogador_id: String(jogadorId), time: 'time1', minuto })
         });
         const dadosGol = await respGol.json().catch(() => null);
+        lfSyncGuardarPartidaDoServidor(dadosGol);
         // Se o servidor retornou o id do gol, guarda no array local pra permitir remoção depois
         if (dadosGol && dadosGol.ok && dadosGol.gol && typeof feedIndex === 'number' && golsFeedPartida[feedIndex]) {
             golsFeedPartida[feedIndex].dbId = dadosGol.gol.id;
@@ -1335,7 +1461,10 @@ async function lfSyncRegistrarGol(jogadorId, jogadorNome, minuto, feedIndex) {
         // Garante que o jogador existe no servidor (id numérico do app)
         await lfSyncEnviar('/jogadores', { id: String(jogadorId), nome: jogadorNome });
     } catch (err) {
-        // Offline: a fila do lfSyncEnviar cobre; criação de partida tenta de novo no próximo gol
+        // Offline: o gol NÃO entra na fila (a fila não sabe o dia certo dele).
+        // Quem cobre é lfSyncEnviarGolsPendentes, no boot / online / botão Sync.
+    } finally {
+        lfSyncGolsEmVoo--;
     }
 }
 
@@ -1353,8 +1482,9 @@ async function lfSyncRemoverGol(dbId) {
     }
 }
 
-// Ao abrir o app com sync ativo, puxa a artilharia acumulada do servidor
-lfSyncCarregarArtilharia();
+// Ao abrir o app com sync ativo: esvazia a fila, sobe gols de hoje que
+// faltam no servidor e puxa a artilharia do dia
+lfSyncSincronizarTudo();
 
 // ============================================================
 // VISTA ARtilHARIA: HOJE vs GERAL (estado declarado antes de registrarGol)
