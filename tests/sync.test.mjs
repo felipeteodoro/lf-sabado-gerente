@@ -916,3 +916,84 @@ test('flush concorrente (boot + online) não manda a fila em dobro', async () =>
   await esperarBoot();
   assert.equal(fetchCalls.filter((c) => c.url.endsWith('/presencas')).length, 1);
 });
+
+// --- Reset da meia-noite arquiva o dia em vez de apagar (auditoria ub-mode) ---
+// Caso real 2026-11-07: o primeiro abrir do domingo apagou os gols de sábado
+// (e o jogador Thiago, criado na hora) do celular do Râneer.
+
+const ONTEM = new Date(Date.now() - 24 * 3600 * 1000);
+const isoLocal = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+const backupDoDia = (extra = {}) => JSON.stringify({
+  jogadoresData: [
+    { id: 1, nome: 'Râneer', posicao: 'linha', presente: true, foto: 'fotos/raneer_v2.jpg' },
+    { id: 57, nome: 'Thiago', posicao: 'linha', presente: true, foto: '' },
+  ],
+  timesSorteadosGlobal: [], tempoRestante: 420, golsPartidaAtual: 1, golsJogadorPartida: { 57: 1 },
+  golsFeedPartida: [{ id: 57, dbId: null, nome: 'Thiago', foto: '', minuto: '03:00' }],
+  ...extra,
+});
+
+test('reset do dia: artilharia e feed de ontem vão pro arquivo, o dia começa zerado', () => {
+  const { storage } = carregarApp({
+    storageInitial: {
+      dataPelada: ONTEM.toDateString(),
+      artilhariaPelada: JSON.stringify({ 57: { nome: 'Thiago', gols: 7, foto: '' } }),
+      backupPelada: backupDoDia(),
+    },
+  });
+  assert.equal(storage.getItem('artilhariaPelada'), null, 'dia novo começa vazio');
+  assert.equal(storage.getItem('backupPelada'), null);
+  assert.equal(storage.getItem('dataPelada'), new Date().toDateString());
+  const arquivo = JSON.parse(storage.getItem('arquivoDias'));
+  const dia = arquivo[isoLocal(ONTEM)];
+  assert.equal(dia.artilharia[57].gols, 7);
+  assert.equal(dia.golsFeedPartida[0].nome, 'Thiago');
+});
+
+test('reset do dia: jogador criado na hora sobrevive (e não duplica)', () => {
+  const { world, storage } = carregarApp({
+    storageInitial: { dataPelada: ONTEM.toDateString(), backupPelada: backupDoDia() },
+  });
+  world.salvarBackup();
+  const jogadores = JSON.parse(storage.getItem('backupPelada')).jogadoresData;
+  assert.equal(jogadores.filter((j) => j.id === 57).length, 1, 'Thiago continua, uma vez só');
+  assert.equal(jogadores.find((j) => j.id === 57).presente, false, 'presença zera no dia novo');
+  assert.equal(jogadores.filter((j) => j.id === 1).length, 1, 'jogador fixo não duplica');
+  assert.deepEqual(JSON.parse(storage.getItem('jogadoresLocais')).map((j) => j.id), [57]);
+});
+
+test('reset do dia: jogador local de dias anteriores continua mesmo sem backup', () => {
+  const { world, storage } = carregarApp({
+    storageInitial: {
+      dataPelada: ONTEM.toDateString(),
+      jogadoresLocais: JSON.stringify([{ id: 57, nome: 'Thiago', posicao: 'linha', presente: false, foto: '' }]),
+    },
+  });
+  world.salvarBackup();
+  assert.ok(JSON.parse(storage.getItem('backupPelada')).jogadoresData.some((j) => j.id === 57));
+});
+
+test('reset do dia: arquivo guarda só os 3 dias mais recentes', () => {
+  const { storage } = carregarApp({
+    storageInitial: {
+      dataPelada: ONTEM.toDateString(),
+      artilhariaPelada: JSON.stringify({ 1: { nome: 'Râneer', gols: 1, foto: '' } }),
+      arquivoDias: JSON.stringify({
+        '2026-10-24': { artilharia: {} }, '2026-10-31': { artilharia: {} }, '2026-11-01': { artilharia: {} },
+      }),
+    },
+  });
+  const dias = Object.keys(JSON.parse(storage.getItem('arquivoDias'))).sort();
+  assert.deepEqual(dias, ['2026-10-31', '2026-11-01', isoLocal(ONTEM)].sort());
+});
+
+test('reset do dia: dia sem nada não cria arquivo; mesmo dia não reseta', () => {
+  const vazio = carregarApp({ storageInitial: { dataPelada: ONTEM.toDateString() } });
+  assert.equal(vazio.storage.getItem('arquivoDias'), null);
+  const mesmoDia = carregarApp({
+    storageInitial: { artilhariaPelada: JSON.stringify({ 1: { nome: 'Râneer', gols: 2, foto: '' } }) },
+  });
+  assert.equal(JSON.parse(mesmoDia.storage.getItem('artilhariaPelada'))[1].gols, 2);
+  assert.equal(mesmoDia.storage.getItem('arquivoDias'), null);
+});

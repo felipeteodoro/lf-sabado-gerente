@@ -4,6 +4,10 @@
 // ReferenceError (TDZ) quando o timer dispara antes do fim do script.
 const LF_SYNC_ENDPOINT_KEY = 'lfSyncEndpoint';
 
+// Quantos dias anteriores o reset da meia-noite guarda em `arquivoDias`
+// (antes apagava — ver verificarLimpezaMeiaNoite).
+const DIAS_NO_ARQUIVO = 3;
+
 // Controle de concorrência do sync (ver lfSyncFlush / lfSyncEnviarGolsPendentes).
 // Gols em envio: a reconciliação espera eles acabarem pra não duplicar.
 let lfSyncGolsEmVoo = 0;
@@ -161,6 +165,8 @@ function init() {
         }
     }
 
+    incluirJogadoresLocais();
+
     const totalJogadores = document.getElementById('total-jogadores');
     if(totalJogadores) totalJogadores.innerText = jogadoresData.length;
     
@@ -193,15 +199,59 @@ function init() {
     }, 0);
 }
 
+// Dia novo: a tela começa zerada, como sempre. Mas o dia anterior vai pro
+// `arquivoDias` (últimos DIAS_NO_ARQUIVO) em vez de ser apagado, e os
+// jogadores criados na hora ficam em `jogadoresLocais`.
+// Caso real 2026-11-07: o 1º abrir do domingo apagou os gols de sábado e o
+// jogador Thiago do celular do Râneer — não havia como recuperar.
 function verificarLimpezaMeiaNoite() {
     const dataSalva = localStorage.getItem('dataPelada');
-    const dataHoje = new Date().toDateString(); 
-    
-    if (dataSalva !== dataHoje) {
-        localStorage.removeItem('artilhariaPelada');
-        localStorage.removeItem('backupPelada'); 
-        localStorage.setItem('dataPelada', dataHoje);
+    const dataHoje = new Date().toDateString();
+    if (dataSalva === dataHoje) return;
+
+    const backup = JSON.parse(localStorage.getItem('backupPelada') || 'null');
+    arquivarDia(dataSalva, JSON.parse(localStorage.getItem('artilhariaPelada') || 'null'), backup);
+    guardarJogadoresLocais(backup);
+    localStorage.removeItem('artilhariaPelada');
+    localStorage.removeItem('backupPelada');
+    localStorage.setItem('dataPelada', dataHoje);
+}
+
+function dataIsoLocal(data) {
+    if (isNaN(data)) return 'sem-data';
+    const mm = String(data.getMonth() + 1).padStart(2, '0');
+    const dd = String(data.getDate()).padStart(2, '0');
+    return `${data.getFullYear()}-${mm}-${dd}`;
+}
+
+function arquivarDia(dataSalva, artilharia, backup) {
+    const feed = backup?.golsFeedPartida || [];
+    if (!artilharia && feed.length === 0) return;
+    const arquivo = JSON.parse(localStorage.getItem('arquivoDias') || '{}');
+    arquivo[dataIsoLocal(new Date(dataSalva))] = { artilharia: artilharia || {}, golsFeedPartida: feed };
+    const recentes = Object.keys(arquivo).sort().slice(-DIAS_NO_ARQUIVO);
+    localStorage.setItem('arquivoDias', JSON.stringify(Object.fromEntries(recentes.map(d => [d, arquivo[d]]))));
+}
+
+// Jogador criado na hora (adicionarPlayer) só existia dentro do backupPelada.
+// Roda antes do init restaurar o backup: jogadoresData ainda é a lista fixa.
+function guardarJogadoresLocais(backup) {
+    const fixos = new Set(jogadoresData.map(j => j.id));
+    const porId = new Map(lerJogadoresLocais().map(j => [j.id, j]));
+    for (const j of (backup?.jogadoresData || [])) {
+        if (!fixos.has(j.id)) porId.set(j.id, { ...j, presente: false });
     }
+    if (porId.size > 0) localStorage.setItem('jogadoresLocais', JSON.stringify([...porId.values()]));
+}
+
+function lerJogadoresLocais() {
+    return JSON.parse(localStorage.getItem('jogadoresLocais') || '[]');
+}
+
+// Garante os jogadores locais na lista (sem duplicar quem o backup já trouxe)
+function incluirJogadoresLocais() {
+    const presentes = new Set(jogadoresData.map(j => j.id));
+    jogadoresData.push(...lerJogadoresLocais().filter(j => !presentes.has(j.id)));
 }
 
 function mudarAba(aba) {
