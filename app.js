@@ -114,15 +114,17 @@ function esconder(id) {
 }
 
 function abrirModal(id) {
-    const el = document.getElementById(id);
-    el?.classList.remove('hidden');
-    el?.classList.add('flex');
+    exibirModal(id, true);
 }
 
 function fecharModal(id) {
+    exibirModal(id, false);
+}
+
+function exibirModal(id, aberto) {
     const el = document.getElementById(id);
-    el?.classList.add('hidden');
-    el?.classList.remove('flex');
+    el?.classList.toggle('hidden', !aberto);
+    el?.classList.toggle('flex', aberto);
 }
 
 function getAvatarUrl(nome) {
@@ -315,8 +317,7 @@ function abrirModalEditarPosicao(id) {
 }
 
 function fecharModalEditarPosicao() {
-    const modal = document.getElementById('modal-editar-posicao');
-    if (modal) modal.classList.add('hidden');
+    esconder('modal-editar-posicao');
     jogadorEditandoPosicao = null;
 }
 
@@ -1162,8 +1163,7 @@ function mostrarBannerInstall() {
 }
 
 function fecharBannerInstall() {
-    const banner = document.getElementById('install-banner');
-    if (banner) banner.classList.add('hidden');
+    esconder('install-banner');
     // Não guarda "não mostrar mais": quem acessa por link sempre vê —
     // era a intenção desde o começo do projeto.
 }
