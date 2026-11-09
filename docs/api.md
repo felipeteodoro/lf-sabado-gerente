@@ -10,6 +10,12 @@ autenticação. **O PWA funciona 100% sem ele** — o sync é opt-in e desligado
 
 ---
 
+## Fuso horário
+
+- **"Hoje" é sempre o dia em `America/Sao_Paulo`**, na API (`hojeSaoPaulo()`) e no app (`diaDaPelada()`), qualquer que seja o fuso do servidor ou do celular. Isso vale para `partidas.data`, `presencas.data`, `artilharia_hoje`, `removidos_hoje`, `GET /gols/dia` e a regra "só gol de hoje" do admin.
+- **Timestamps (`created_at`) ficam em UTC** no banco (`datetime('now')`).
+- Até 2026-11-08 a API misturava três fusos: UTC (`toISOString`) em `/partidas` e `/presencas`, o fuso do servidor em `/gols`, e `localtime` do SQLite no `/estado`. Depois das 21h de Brasília, presença e partida nova caíam no dia seguinte.
+
 ## Schema
 
 Quatro tabelas. Todas com FK ativa (`PRAGMA foreign_keys = ON`).

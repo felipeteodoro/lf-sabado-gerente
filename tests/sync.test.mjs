@@ -61,7 +61,14 @@ function makeStorage(initial = {}) {
 // funções globais (registrarGol, lfSync*, etc) e os mocks pra inspeção.
 // Estado do dia já marcado → boot não dispara o reset à meia-noite
 // (limparia artilhariaPelada/backupPelada e invalidaria o cenário do teste)
-const HOJE = { dataPelada: new Date().toDateString() };
+// Dia da pelada é o de São Paulo (mesmo formato de toDateString que o app grava)
+function diaSaoPaulo(agora = new Date()) {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Sao_Paulo', year: 'numeric', month: 'numeric', day: 'numeric',
+  }).formatToParts(agora).map((x) => [x.type, x.value]));
+  return new Date(Number(p.year), Number(p.month) - 1, Number(p.day)).toDateString();
+}
+const HOJE = { dataPelada: diaSaoPaulo() };
 
 function carregarApp({ fetchImpl, storageInitial = {} } = {}) {
   const storage = makeStorage({ ...HOJE, ...storageInitial });
@@ -408,7 +415,7 @@ test('sorteio com sync desligado NÃO envia presencas', async () => {
 test('atrasado confirmado depois do sorteio ganha presenca no servidor', async () => {
   // Simula sorteio já feito via backupPelada (o boot hidrata timesSorteadosGlobal)
   const backup = {
-    dataPelada: new Date().toDateString(),
+    dataPelada: diaSaoPaulo(),
     timesSorteadosGlobal: [
       { nome: 'Time 1', jogadores: [{ id: 1, nome: 'Râneer', posicao: 'linha' }] },
       { nome: 'Time 2', jogadores: [{ id: 5, nome: 'Michel', posicao: 'goleiro' }] },
@@ -915,4 +922,39 @@ test('flush concorrente (boot + online) não manda a fila em dobro', async () =>
   await Promise.all([world.lfSyncFlush(), world.lfSyncFlush()]);
   await esperarBoot();
   assert.equal(fetchCalls.filter((c) => c.url.endsWith('/presencas')).length, 1);
+});
+
+// --- Dia da pelada em America/Sao_Paulo, qualquer que seja o fuso do celular ---
+
+test('diaDaPelada: vira à meia-noite de São Paulo, não à do UTC', () => {
+  const { world } = carregarApp();
+  assert.equal(world.diaDaPelada(new Date('2026-11-09T02:30:00Z')), 'Sun Nov 08 2026', '23:30 em SP ainda é dia 8');
+  assert.equal(world.diaDaPelada(new Date('2026-11-09T03:00:00Z')), 'Mon Nov 09 2026', 'meia-noite em SP vira dia 9');
+  assert.equal(world.diaDaPelada(new Date('2026-11-07T12:00:00Z')), 'Sat Nov 07 2026');
+});
+
+test('diaDaPelada: celular em outro fuso continua no dia de São Paulo', () => {
+  const tzOriginal = process.env.TZ;
+  try {
+    process.env.TZ = 'Asia/Tokyo'; // 2026-11-08 23:30 em SP = dia 9 em Tóquio
+    const { world } = carregarApp();
+    assert.equal(world.diaDaPelada(new Date('2026-11-09T02:30:00Z')), 'Sun Nov 08 2026');
+  } finally {
+    if (tzOriginal === undefined) delete process.env.TZ; else process.env.TZ = tzOriginal;
+  }
+});
+
+test('reset: mesmo dia de São Paulo não apaga; dia anterior apaga (formato antigo continua valendo)', () => {
+  const mesmoDia = carregarApp({
+    storageInitial: { artilhariaPelada: JSON.stringify({ 1: { nome: 'R', gols: 2, foto: '' } }) },
+  });
+  assert.equal(JSON.parse(mesmoDia.storage.getItem('artilhariaPelada'))[1].gols, 2);
+  const ontem = carregarApp({
+    storageInitial: {
+      dataPelada: diaSaoPaulo(new Date(Date.now() - 24 * 3600 * 1000)),
+      artilhariaPelada: JSON.stringify({ 1: { nome: 'R', gols: 2, foto: '' } }),
+    },
+  });
+  assert.equal(ontem.storage.getItem('artilhariaPelada'), null);
+  assert.equal(ontem.storage.getItem('dataPelada'), diaSaoPaulo());
 });

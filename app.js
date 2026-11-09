@@ -4,6 +4,10 @@
 // ReferenceError (TDZ) quando o timer dispara antes do fim do script.
 const LF_SYNC_ENDPOINT_KEY = 'lfSyncEndpoint';
 
+// O dia da pelada é sempre o de São Paulo (a API usa o mesmo), não o fuso do
+// celular: alguém com o celular em outro fuso não pode virar o dia antes.
+const FUSO_PELADA = 'America/Sao_Paulo';
+
 // Controle de concorrência do sync (ver lfSyncFlush / lfSyncEnviarGolsPendentes).
 // Gols em envio: a reconciliação espera eles acabarem pra não duplicar.
 let lfSyncGolsEmVoo = 0;
@@ -110,7 +114,7 @@ function getAvatarUrl(nome) {
 // Cache-buster nas URLs de foto. Bumpa junto com o sw.js pra forçar
 // o navegador a re-baixar a foto (quebra qualquer cache HTTP do Chrome
 // que tenha prendado uma resposta 404 antiga).
-const FOTOS_VERSION = '55';
+const FOTOS_VERSION = '61';
 function fotoUrl(path) {
     if (!path) return path;
     return path + '?v=' + FOTOS_VERSION;
@@ -193,9 +197,20 @@ function init() {
     }, 0);
 }
 
+// Dia de São Paulo no formato de toDateString ("Sun Nov 08 2026"), que é o que
+// sempre foi gravado em `dataPelada`: mudar o formato zeraria o dia de todo
+// mundo no primeiro abrir depois do deploy.
+function diaDaPelada(agora = new Date()) {
+    const partes = {};
+    new Intl.DateTimeFormat('en-US', {
+        timeZone: FUSO_PELADA, year: 'numeric', month: 'numeric', day: 'numeric',
+    }).formatToParts(agora).forEach(p => { partes[p.type] = Number(p.value); });
+    return new Date(partes.year, partes.month - 1, partes.day).toDateString();
+}
+
 function verificarLimpezaMeiaNoite() {
     const dataSalva = localStorage.getItem('dataPelada');
-    const dataHoje = new Date().toDateString(); 
+    const dataHoje = diaDaPelada();
     
     if (dataSalva !== dataHoje) {
         localStorage.removeItem('artilhariaPelada');
