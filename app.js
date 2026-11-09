@@ -1205,7 +1205,7 @@ function lfSyncLerEstado() {
     const promise = fetch(lfSyncUrl() + '/estado')
         .then((resp) => resp.json())
         .then((dados) => {
-            if (!dados || !dados.ok) throw new Error('/estado sem ok');
+            if (!dados?.ok) throw new Error('/estado sem ok');
             return dados;
         });
     lfSyncEstadoCache = { em: agora, promise };
@@ -1248,7 +1248,7 @@ async function lfSyncEnviar(path, body) {
         return { ok: true, resp };
     } catch (err) {
         // Offline: enfileira pra sincronizar depois
-        console.warn('[lfSyncEnviar] ' + path + ' offline, enfileirando:', err && err.message);
+        console.warn('[lfSyncEnviar] ' + path + ' offline, enfileirando:', err);
         lfSyncFila.push({ path, body });
         localStorage.setItem('lfSyncFila', JSON.stringify(lfSyncFila));
         return { ok: false, reason: 'offline', queued: true };
@@ -1272,7 +1272,7 @@ async function lfSyncEnviarPatch(path, body) {
         }
         return { ok: true };
     } catch (err) {
-        console.warn('[lfSyncEnviarPatch] ' + path + ' offline:', err && err.message);
+        console.warn('[lfSyncEnviarPatch] ' + path + ' offline:', err);
         return { ok: false, reason: 'offline' };
     }
 }
@@ -1329,9 +1329,9 @@ function mesclarArtilhariaDoDia(local, artilhariaHoje, jogadores) {
     for (const a of (artilhariaHoje || [])) {
         const idNum = parseInt(a.id, 10);
         if (!(idNum > 0)) continue;
-        if ((resultado[idNum]?.gols ?? -1) >= a.gols) continue;
+        if (resultado[idNum]?.gols >= a.gols) continue;
         const jogador = jogadores.find(j => j.id === idNum);
-        resultado[idNum] = { nome: a.nome, gols: a.gols, foto: jogador?.foto ?? '' };
+        resultado[idNum] = { nome: a.nome, gols: a.gols, foto: jogador?.foto || '' };
     }
     return resultado;
 }
@@ -1409,7 +1409,7 @@ async function lfSyncGarantirPartida(url, sugestao) {
     if (conhecida) return conhecida;
     const resp = await fetch(url + '/partidas', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
     const dados = await resp.json();
-    if (!dados || !dados.ok) return null;
+    if (!dados.ok) return null;
     const id = String(dados.partida.id);
     localStorage.setItem('lfSyncPartidaId', id);
     return id;
@@ -1423,9 +1423,9 @@ async function lfSyncPostarGol(url, partidaId, jogadorId, minuto) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ partida_id: Number(partidaId), jogador_id: String(jogadorId), time: 'time1', minuto })
         });
-        const dados = await resp.json().catch(() => null);
+        const dados = await resp.json().catch(() => ({}));
         lfSyncGuardarPartidaDoServidor(dados);
-        return resp.ok && dados && dados.ok ? dados : null;
+        return resp.ok && dados.ok ? dados : null;
     } finally {
         lfSyncInvalidarEstado();
     }
@@ -1442,7 +1442,7 @@ function lfSyncGuardarPartidaDoServidor(dadosGol) {
 // Gol reconciliado: liga o id do servidor ao primeiro item do feed da partida
 // atual desse jogador que ainda não tem dbId (permite a lixeira apagar no servidor).
 function lfSyncVincularDbId(jogadorId, dadosGol) {
-    if (!dadosGol || !dadosGol.gol || typeof golsFeedPartida === 'undefined') return;
+    if (!dadosGol.gol) return;
     const item = golsFeedPartida.find(g => String(g.id) === String(jogadorId) && (g.dbId === null || g.dbId === undefined));
     if (!item) return;
     item.dbId = dadosGol.gol.id;
@@ -1465,8 +1465,7 @@ function lfSyncToggleConfig() {
     const atual = lfSyncUrl() || 'https://lf.felipeteodoro.dev';
     const url = prompt(
         'Sincronização de artilharia com servidor próprio.\n\n' +
-        'Público (Cloudflare Tunnel): https://lf.felipeteodoro.dev\n' +
-        'Local (sem internet):       http://192.168.31.221:8887\n\n' +
+        'Público (Cloudflare Tunnel): https://lf.felipeteodoro.dev\n\n' +
         'Cole a URL https:// do servidor (vazio = desligar):',
         atual
     );
@@ -1512,7 +1511,7 @@ async function lfSyncRegistrarGol(jogadorId, jogadorNome, minuto, feedIndex) {
         if (!partidaId) return;
         const gol = await lfSyncPostarGol(url, partidaId, jogadorId, minuto);
         // Guarda o id do servidor no item do feed pra lixeira poder remover depois
-        if (gol && gol.gol && typeof feedIndex === 'number' && golsFeedPartida[feedIndex]) {
+        if (gol?.gol && golsFeedPartida[feedIndex]) {
             golsFeedPartida[feedIndex].dbId = gol.gol.id;
             // Re-salva o backup pra persistir o dbId (importante pra remoção após restart)
             if (typeof salvarBackup === 'function') salvarBackup();

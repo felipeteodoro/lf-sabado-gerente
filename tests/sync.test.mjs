@@ -17,7 +17,8 @@ import vm from 'node:vm';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const APP_JS = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'app.js'), 'utf8');
+const APP_JS_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'app.js');
+const APP_JS = readFileSync(APP_JS_PATH, 'utf8');
 
 // --- Mocks mínimos ----------------------------------------------------
 
@@ -102,8 +103,10 @@ function carregarApp({ fetchImpl, storageInitial = {} } = {}) {
     navigator: { standalone: false },
   };
   const context = vm.createContext(world);
-  vm.runInContext(APP_JS, context, { filename: 'app.js' });
-  return { world, storage, fetchCalls, windowHandlers };
+  // Caminho absoluto: stack traces apontam pro arquivo e o V8 consegue
+  // atribuir cobertura ao app.js (node --experimental-test-coverage).
+  vm.runInContext(APP_JS, context, { filename: APP_JS_PATH });
+  return { world, storage, fetchCalls, windowHandlers, context };
 }
 
 const ESTADO_OK = (artilharia = []) => ({
@@ -840,8 +843,7 @@ test('gols pendentes: com gol em envio, não reconcilia (evita duplicar)', async
 
   world.registrarGol(22, 'Felipe Teo.'); // local = 1, POST pendurado
   const r = await world.lfSyncEnviarGolsPendentes();
-  assert.equal(r.enviados, 0);
-  assert.equal(r.reason, 'gol-em-voo');
+  assert.deepEqual(JSON.parse(JSON.stringify(r)), { ok: false, enviados: 0, reason: 'gol-em-voo' });
 
   liberarGol();
   await esperarBoot();
@@ -1173,4 +1175,236 @@ test('vista geral: só quem tem gol, foto do servidor com fallback na local', as
   assert.equal(geral[1].foto, 'https://x/fotos/mine.jpg');
   assert.equal(geral[1].partidas, null);
   assert.equal(geral[0].presencas, 3);
+});
+
+// --- Mutantes sobreviventes da camada de sync (ub-mode: kill the survivors) ---
+
+test('lfSyncLerEstado: falha não fica no cache; TTL vencido relê', async () => {
+  let falhar = true;
+  const { world, fetchCalls, context } = carregarApp({
+    storageInitial: { lfSyncEndpoint: 'https://lf.exemplo.dev' },
+    fetchImpl: async () => jsonResp(falhar ? null : ESTADO_OK([])),
+  });
+  await esperarBoot();
+  await assert.rejects(world.lfSyncLerEstado());
+  falhar = false;
+  vm.runInContext('globalThis.__agora = Date.now(); Date.now = () => globalThis.__agora', context);
+  await world.lfSyncLerEstado();
+  const lidas = () => fetchCalls.filter((c) => c.url.endsWith('/estado')).length;
+  const depoisDaFalha = lidas();
+  vm.runInContext('globalThis.__agora += 29999', context);
+  await world.lfSyncLerEstado();
+  assert.equal(lidas(), depoisDaFalha, 'dentro do TTL usa o cache');
+  vm.runInContext('globalThis.__agora += 1', context); // exatamente 30 s
+  await world.lfSyncLerEstado();
+  assert.equal(lidas(), depoisDaFalha + 1, 'TTL vencido relê');
+});
+
+test('lfSyncEnviar: sucesso, offline e sync off devolvem o formato certo e logam', async () => {
+  let modo = 'ok';
+  const { world, storage } = carregarApp({
+    storageInitial: { lfSyncEndpoint: 'https://lf.exemplo.dev' },
+    fetchImpl: async () => {
+      if (modo === 'offline') throw new TypeError('Failed to fetch');
+      if (modo === 'erro') return { ok: false, status: 503, text: async () => 'fora' };
+      return jsonResp({ ok: true });
+    },
+  });
+  await esperarBoot();
+  const logs = [];
+  world.console.warn = (...a) => logs.push(a.join(' '));
+  const ok = await world.lfSyncEnviar('/presencas', {});
+  assert.equal(ok.ok, true);
+  modo = 'erro';
+  await world.lfSyncEnviar('/presencas', {});
+  assert.ok(logs.some((l) => l.includes('/presencas -> HTTP 503: fora')), 'loga path, status e corpo');
+  modo = 'offline';
+  const off = await world.lfSyncEnviar('/jogadores', { id: '1' });
+  assert.deepEqual(JSON.parse(JSON.stringify(off)), { ok: false, reason: 'offline', queued: true });
+  assert.ok(logs.some((l) => l.includes('/jogadores offline, enfileirando:')));
+  assert.equal(JSON.parse(storage.getItem('lfSyncFila')).length, 1);
+  storage.removeItem('lfSyncEndpoint');
+  assert.equal((await world.lfSyncEnviar('/x', {})).ok, false);
+  assert.equal((await world.lfSyncEnviarPatch('/x', {})).ok, false);
+});
+
+test('lfSyncEnviarPatch: ok, erro HTTP e offline', async () => {
+  let modo = 'ok';
+  const { world } = carregarApp({
+    storageInitial: { lfSyncEndpoint: 'https://lf.exemplo.dev' },
+    fetchImpl: async (url, opts) => {
+      if (opts?.method !== 'PATCH') return servidorFake().fetchImpl(url, opts);
+      if (modo === 'offline') throw new TypeError('Failed to fetch');
+      return modo === 'ok' ? jsonResp({ ok: true }) : { ok: false, status: 400, text: async () => 'nao' };
+    },
+  });
+  await esperarBoot();
+  const logs = [];
+  world.console.warn = (...a) => logs.push(a.join(' '));
+  assert.deepEqual(JSON.parse(JSON.stringify(await world.lfSyncEnviarPatch('/jogadores/1', {}))), { ok: true });
+  modo = 'erro';
+  const erro = await world.lfSyncEnviarPatch('/jogadores/1', {});
+  assert.deepEqual(JSON.parse(JSON.stringify(erro)), { ok: false, status: 400, body: 'nao' });
+  assert.ok(logs.some((l) => l.includes('/jogadores/1 -> HTTP 400: nao')));
+  modo = 'offline';
+  assert.equal((await world.lfSyncEnviarPatch('/jogadores/1', {})).reason, 'offline');
+  assert.ok(logs.some((l) => l.includes('/jogadores/1 offline:')));
+});
+
+test('lfSyncFlush: sync desligado não envia a fila', async () => {
+  const { world, fetchCalls } = carregarApp({
+    storageInitial: { lfSyncFila: JSON.stringify([{ path: '/presencas', body: {} }]) },
+  });
+  await world.lfSyncFlush();
+  assert.equal(fetchCalls.length, 0);
+});
+
+test('mesclarArtilhariaDoDia: empate mantém o local; id 0 é ignorado', () => {
+  const { world } = carregarApp();
+  const r = world.mesclarArtilhariaDoDia(
+    { 1: { nome: 'Local', gols: 2, foto: 'a' } },
+    [{ id: '1', nome: 'Servidor', gols: 2 }, { id: '0', nome: 'Zero', gols: 1 }],
+    [],
+  );
+  assert.equal(r[1].nome, 'Local');
+  assert.equal(r[0], undefined);
+});
+
+test('reconciliação: formato do resultado (sync off, em voo, sucesso)', async () => {
+  const off = carregarApp();
+  assert.deepEqual(JSON.parse(JSON.stringify(await off.world.lfSyncEnviarGolsPendentes())), { ok: false, enviados: 0, reason: 'sync-off' });
+  const srv = servidorFake();
+  const { world } = carregarApp({ storageInitial: { lfSyncEndpoint: 'https://lf.exemplo.dev' }, fetchImpl: srv.fetchImpl });
+  await esperarBoot();
+  assert.deepEqual(JSON.parse(JSON.stringify(await world.lfSyncEnviarGolsPendentes())), { ok: true, enviados: 0 });
+});
+
+test('reconciliação: 1 gol enviado já invalida o geral (relê /estado)', async () => {
+  const srv = servidorFake();
+  const { world, fetchCalls } = carregarApp({
+    storageInitial: { lfSyncEndpoint: 'https://lf.exemplo.dev', lfSyncPartidaId: '31' },
+    fetchImpl: srv.fetchImpl,
+  });
+  await esperarBoot();
+  world.registrarGol(22, 'Felipe Teo.');
+  await esperarBoot();
+  srv.recebidos.length = 0;
+  srv.golsHoje['22'] = 0; // servidor "perdeu" o gol
+  world.lfSyncInvalidarEstado();
+  await world.lfSyncArtilhariaGeral(); // enche o cache do Geral
+  const r = await world.lfSyncEnviarGolsPendentes();
+  assert.equal(r.enviados, 1);
+  const antes = fetchCalls.filter((c) => c.url.endsWith('/estado')).length;
+  await world.lfSyncArtilhariaGeral();
+  assert.equal(fetchCalls.filter((c) => c.url.endsWith('/estado')).length, antes + 1, 'Geral rebuscado');
+});
+
+test('reconciliação: erro num jogador para antes dos próximos', async () => {
+  const srv = servidorFake();
+  const { fetchCalls } = carregarApp({
+    storageInitial: {
+      lfSyncEndpoint: 'https://lf.exemplo.dev',
+      lfSyncPartidaId: '31',
+      artilhariaPelada: JSON.stringify({ 1: { nome: 'Râneer', gols: 1 }, 22: { nome: 'Felipe Teo.', gols: 1 } }),
+    },
+    fetchImpl: async (url, opts) => (url.endsWith('/gols')
+      ? { ok: false, status: 500, json: async () => ({ ok: false }) }
+      : srv.fetchImpl(url, opts)),
+  });
+  await esperarBoot();
+  const jogadores = fetchCalls.filter((c) => c.url.endsWith('/jogadores')).map((c) => JSON.parse(c.opts.body).id);
+  assert.deepEqual(jogadores, ['1'], 'não tentou o segundo jogador');
+});
+
+test('reconciliação: usa a partida do /estado quando não há uma memorizada', async () => {
+  const srv = servidorFake({ partida: { id: 27 } });
+  const { fetchCalls } = carregarApp({
+    storageInitial: {
+      lfSyncEndpoint: 'https://lf.exemplo.dev',
+      artilhariaPelada: JSON.stringify({ 1: { nome: 'Râneer', gols: 1 } }),
+    },
+    fetchImpl: srv.fetchImpl,
+  });
+  await esperarBoot();
+  assert.ok(!fetchCalls.some((c) => c.url.endsWith('/partidas')), 'não criou partida');
+  assert.equal(srv.recebidos[0].partida_id, 27);
+});
+
+test('golsFaltandoNoServidor: item nulo no local não quebra', () => {
+  const { world } = carregarApp();
+  assert.deepEqual(JSON.parse(JSON.stringify(world.golsFaltandoNoServidor({ 1: null }, []))), []);
+});
+
+test('lfSyncPostarGol: HTTP de erro com corpo ok:true ainda é falha', async () => {
+  const { world } = carregarApp({
+    storageInitial: { lfSyncEndpoint: 'https://lf.exemplo.dev' },
+    fetchImpl: async () => ({ ok: false, status: 502, json: async () => ({ ok: true, gol: { id: 1 } }) }),
+  });
+  assert.equal(await world.lfSyncPostarGol('https://lf.exemplo.dev', '31', 1, null), null);
+});
+
+test('lfSyncRegistrarGol: sem feedIndex não mexe no feed; servidor recusa -> sem dbId', async () => {
+  const srv = servidorFake();
+  const { world, storage } = carregarApp({
+    storageInitial: { lfSyncEndpoint: 'https://lf.exemplo.dev', lfSyncPartidaId: '31' },
+    fetchImpl: srv.fetchImpl,
+  });
+  await esperarBoot();
+  await world.lfSyncRegistrarGol(22, 'Felipe Teo.', '01:00');
+  assert.equal(srv.recebidos.length, 1);
+  assert.equal(storage.getItem('backupPelada'), null, 'nada pra salvar sem feedIndex');
+});
+
+test('botão Sync: prompt sugere o endpoint público e o alerta mostra a URL', () => {
+  const { world } = carregarApp();
+  let msg; let sugestao;
+  world.prompt = (m, s) => { msg = m; sugestao = s; return 'https://lf.exemplo.dev'; };
+  world.lfSyncToggleConfig();
+  assert.equal(sugestao, 'https://lf.felipeteodoro.dev', 'sem endpoint, sugere o público');
+  assert.ok(msg.includes('Cloudflare Tunnel): https://lf.felipeteodoro.dev'));
+  assert.ok(!msg.includes('http://'), 'não sugere endpoint http (o app recusa)');
+  assert.ok(world._alerts.includes('Sync ativado: https://lf.exemplo.dev'));
+});
+
+test('lfSyncAvisarGolsEnviados: 1 gol também avisa', () => {
+  const { world } = carregarApp();
+  world.lfSyncAvisarGolsEnviados({ ok: true, enviados: 1 });
+  assert.match(world._alerts[0], /^1 gol\(s\)/);
+});
+
+test('hidratar jogadores: devolve true quando algo mudou', async () => {
+  let posicao = 'linha';
+  const { world } = carregarApp({
+    storageInitial: { lfSyncEndpoint: 'https://lf.exemplo.dev' },
+    fetchImpl: async () => jsonResp({ ...ESTADO_OK([]), jogadores: [{ id: '1', nome: 'Râneer', posicao, foto: null }] }),
+  });
+  await esperarBoot();
+  posicao = 'goleiro';
+  world.lfSyncInvalidarEstado();
+  assert.equal(await world.lfSyncHidratarJogadores(), true);
+});
+
+test('vista geral: partidas/presencas 0 continuam 0 (não viram null)', async () => {
+  const { world } = carregarApp({
+    storageInitial: { lfSyncEndpoint: 'https://lf.exemplo.dev' },
+    fetchImpl: async () => jsonResp(ESTADO_OK([{ id: '1', nome: 'Râneer', gols: 1, partidas: 0, presencas: 0 }])),
+  });
+  await esperarBoot();
+  const [g] = await world.lfSyncArtilhariaGeral();
+  assert.equal(g.partidas, 0);
+  assert.equal(g.presencas, 0);
+});
+
+test('invalidar o geral com a vista Geral aberta rebusca do servidor', async () => {
+  const { world, fetchCalls } = carregarApp({
+    storageInitial: { lfSyncEndpoint: 'https://lf.exemplo.dev' },
+    fetchImpl: servidorFake().fetchImpl,
+  });
+  await esperarBoot();
+  world.alternarVistaArtilharia('geral');
+  await esperarBoot();
+  const antes = fetchCalls.filter((c) => c.url.endsWith('/estado')).length;
+  world.lfSyncInvalidarCacheGeral();
+  await esperarBoot();
+  assert.equal(fetchCalls.filter((c) => c.url.endsWith('/estado')).length, antes + 1);
 });
