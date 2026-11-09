@@ -1214,3 +1214,130 @@ test('artilharia: medalhas por colocação e estatísticas só quando vierem', (
   assert.ok(html[2].includes('text-amber-600'));
   assert.ok(html[3].includes('4º') && html[3].includes('0.00/j'));
 });
+
+// --- Regras de negócio com mutantes vivos (sorteio, atrasados, cronômetro, gol) ---
+
+const backupCom = (campos) => JSON.stringify({
+  jogadoresData: [], timesSorteadosGlobal: [], tempoRestante: 420, golsPartidaAtual: 0, golsJogadorPartida: {}, golsFeedPartida: [],
+  ...campos,
+});
+
+test('minuto do gol: decorrido em mm:ss, com clamp 00:00–07:00', () => {
+  const minuto = (tempoRestante) => carregarApp({ storageInitial: { backupPelada: backupCom({ tempoRestante }) } }).world.minutoGolAtual();
+  assert.equal(minuto(420), '00:00');
+  assert.equal(minuto(299), '02:01');
+  assert.equal(minuto(0), '07:00');
+  assert.equal(minuto(-5), '07:00', 'timer passou do zero');
+  assert.equal(minuto(430), '00:00', 'nunca negativo');
+});
+
+test('gol: atleta com 2 gols na partida é barrado; foto vai pro feed e pra artilharia', () => {
+  const barrado = carregarApp({ storageInitial: { backupPelada: backupCom({ golsJogadorPartida: { 22: 2 } }) } });
+  barrado.world.registrarGol(22, 'Felipe Teo.');
+  assert.ok(barrado.world._alerts.some((a) => /limite de 2 gols/.test(a)));
+  const { world, storage } = carregarApp();
+  world.registrarGol(22, 'Felipe Teo.');
+  assert.equal(JSON.parse(storage.getItem('artilhariaPelada'))[22].foto, 'fotos/felipe_teo_v2.jpg');
+  assert.equal(JSON.parse(storage.getItem('backupPelada')).golsFeedPartida[0].foto, 'fotos/felipe_teo_v2.jpg');
+});
+
+test('remover gol: devolve a cota do atleta na partida', async () => {
+  const { world, storage } = carregarApp();
+  world.registrarGol(22, 'Felipe Teo.');
+  await world.removerGol(0);
+  assert.deepEqual(JSON.parse(storage.getItem('backupPelada')).golsJogadorPartida, {});
+});
+
+test('backup sem contadores: partida começa em 0 gols', () => {
+  const { world, storage } = carregarApp({
+    storageInitial: { backupPelada: JSON.stringify({ jogadoresData: [], timesSorteadosGlobal: [], tempoRestante: 420 }) },
+  });
+  world.salvarBackup();
+  const b = JSON.parse(storage.getItem('backupPelada'));
+  assert.equal(b.golsPartidaAtual, 0);
+  assert.deepEqual(b.golsJogadorPartida, {});
+  assert.deepEqual(b.golsFeedPartida, []);
+});
+
+test('cronômetro: pausar e tocar de novo retoma; chegar a 0 encerra a partida', () => {
+  const { world, storage } = carregarApp({
+    storageInitial: { backupPelada: backupCom({ timesSorteadosGlobal: [{ nome: 'Time 1', jogadores: [] }], tempoRestante: 1 }) },
+  });
+  let tick = null; let inicios = 0;
+  world.setInterval = (fn) => { tick = fn; inicios++; return 1; };
+  world.toggleCronometro();
+  world.toggleCronometro(); // pausa
+  world.toggleCronometro(); // retoma
+  assert.equal(inicios, 2, 'retomou em vez de pausar de novo');
+  tick(); // 1 -> 0
+  assert.ok(world._alerts.includes('Fim de Jogo'));
+  assert.equal(JSON.parse(storage.getItem('backupPelada')).tempoRestante, 420, 'novo jogo preparado');
+});
+
+test('modal de gol: tempo esgotado não monta a lista', () => {
+  const { world } = carregarApp({ storageInitial: { backupPelada: backupCom({ tempoRestante: 0, jogadoresData: [{ id: 1, nome: 'R' }] }) } });
+  let criados = 0;
+  world.document.createElement = () => { criados++; return makeEl(); };
+  world.abrirModalGol();
+  assert.equal(criados, 0);
+});
+
+const presentes = (world, ids) => ids.forEach((id) => world.togglePresenca(id));
+const LINHA_12 = [1, 2, 3, 4, 6, 7, 10, 11, 12, 13, 14, 15]; // 12 de linha
+const GOLEIROS = [5, 9]; // Michel e Christiano
+
+test('sorteio: cada time completo recebe um goleiro; sobra vira o último time', () => {
+  for (let rodada = 0; rodada < 20; rodada++) {
+    const { world, storage } = carregarApp();
+    presentes(world, [...GOLEIROS, ...LINHA_12.slice(0, 9)]); // 11 presentes
+    world.iniciarSorteio();
+    const times = JSON.parse(storage.getItem('backupPelada')).timesSorteadosGlobal;
+    assert.deepEqual(times.map((t) => t.nome), ['Time 1', 'Time 2', 'Time 3']);
+    assert.deepEqual(times.map((t) => t.jogadores.length), [5, 5, 1], 'ninguém fica de fora');
+    for (const t of times.slice(0, 2)) {
+      assert.equal(t.jogadores.filter((j) => j.posicao === 'goleiro').length, 1, 'um goleiro por time completo');
+    }
+  }
+});
+
+test('atrasado: entra no último time se tem vaga, senão abre um time novo; quem sai deixa o time', () => {
+  const { world, storage } = carregarApp();
+  presentes(world, LINHA_12.slice(0, 10));
+  world.iniciarSorteio(); // 2 times de 5
+  presentes(world, [LINHA_12[10]]);
+  let times = JSON.parse(storage.getItem('backupPelada')).timesSorteadosGlobal;
+  assert.deepEqual(times.map((t) => t.jogadores.length), [5, 5, 1], 'time cheio: atrasado abre o Time 3');
+  assert.equal(times[2].nome, 'Time 3');
+  presentes(world, [LINHA_12[11]]);
+  times = JSON.parse(storage.getItem('backupPelada')).timesSorteadosGlobal;
+  assert.deepEqual(times.map((t) => t.jogadores.length), [5, 5, 2], 'vaga no último time');
+  presentes(world, [LINHA_12[11]]); // desmarcou: sai do time
+  times = JSON.parse(storage.getItem('backupPelada')).timesSorteadosGlobal;
+  assert.deepEqual(times.map((t) => t.jogadores.length), [5, 5, 1]);
+});
+
+test('time que fica vazio some e os nomes são renumerados', () => {
+  const { world, storage } = carregarApp();
+  presentes(world, LINHA_12.slice(0, 11));
+  world.iniciarSorteio(); // 5, 5, 1
+  const sozinho = JSON.parse(storage.getItem('backupPelada')).timesSorteadosGlobal[2].jogadores[0].id;
+  world.removerJogadorDoTimeSorteado(2, sozinho);
+  const times = JSON.parse(storage.getItem('backupPelada')).timesSorteadosGlobal;
+  assert.deepEqual(times.map((t) => t.nome), ['Time 1', 'Time 2']);
+});
+
+test('convidado depois do sorteio entra num time; servidor aceita -> fica', async () => {
+  const { world, storage } = carregarApp({
+    storageInitial: { lfSyncEndpoint: 'https://lf.exemplo.dev' },
+    fetchImpl: async (url) => (url.endsWith('/estado') ? jsonResp(ESTADO_OK([])) : jsonResp({ ok: true })),
+  });
+  await esperarBoot();
+  presentes(world, LINHA_12.slice(0, 5));
+  world.iniciarSorteio();
+  world.prompt = () => 'Thiago';
+  world.adicionarPlayer();
+  await esperarBoot();
+  const b = JSON.parse(storage.getItem('backupPelada'));
+  assert.ok(b.jogadoresData.some((j) => j.nome === 'Thiago'), 'servidor aceitou: continua');
+  assert.ok(b.timesSorteadosGlobal.flatMap((t) => t.jogadores).some((j) => j.nome === 'Thiago'), 'alocado num time');
+});
