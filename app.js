@@ -840,10 +840,20 @@ async function removerGol(index) {
     lfSyncInvalidarCacheGeral();
 
     // Tenta deletar no servidor
-    const ok = await lfSyncRemoverGol(gol.dbId);
-    if (!ok && gol.dbId !== null) {
+    const resultado = await lfSyncRemoverGol(gol.dbId);
+    if (!resultado.ok && gol.dbId !== null) {
         // Servidor falhou -> restaura
-        alert('Não foi possível remover o gol no servidor. Restaurando.');
+        if (resultado.status === 401) {
+            // Só o admin vê o logo citado: pros outros a entrada é escondida.
+            if (sessionStorage.getItem(LF_ADMIN_PIN_KEY)) {
+                lfAdminSair();
+                alert('O PIN de admin não vale mais. Toque no logo, entre de novo e tente outra vez.');
+            } else {
+                alert('Esse gol tem mais de 15 min: só o admin pode apagar agora.');
+            }
+        } else {
+            alert('Não foi possível remover o gol no servidor. Restaurando.');
+        }
         golsFeedPartida = snapshot;
         golsPartidaAtual = snapshotGolsPartida;
         golsJogadorPartida = snapshotGolsJogador;
@@ -1482,18 +1492,32 @@ async function lfSyncRegistrarGol(jogadorId, jogadorNome, minuto, feedIndex) {
     }
 }
 
-// DELETE /gols/:id no servidor. Retorna true se OK, false se falhou.
-// Se dbId for null (gol nunca foi sincronizado), retorna true sem chamar o servidor.
+// DELETE /gols/:id no servidor. Devolve { ok, status } (status 0 = sem rede).
+// Se dbId for null (gol nunca foi sincronizado), dá ok sem chamar o servidor.
+// Com sessão de admin aberta manda o PIN: depois de 15 min o servidor exige.
 async function lfSyncRemoverGol(dbId) {
-    if (dbId === null || dbId === undefined) return true; // sem id -> nada a remover no servidor
-    if (!lfSyncAtivo()) return true; // sem sync, remoção é só local
+    if (dbId === null || dbId === undefined) return { ok: true }; // sem id -> nada a remover no servidor
+    if (!lfSyncAtivo()) return { ok: true }; // sem sync, remoção é só local
     const url = localStorage.getItem(LF_SYNC_ENDPOINT_KEY);
+    const pin = sessionStorage.getItem(LF_ADMIN_PIN_KEY);
     try {
-        const resp = await fetch(url + '/gols/' + dbId, { method: 'DELETE' });
-        return resp.ok;
+        const resp = await fetch(url + '/gols/' + dbId, {
+            method: 'DELETE',
+            headers: pin ? { 'X-Admin-Pin': pin } : {},
+        });
+        if (resp.ok) lfSyncMarcarRemocaoAplicada(dbId);
+        return { ok: resp.ok, status: resp.status };
     } catch (err) {
-        return false;
+        return { ok: false, status: 0 };
     }
+}
+
+// Este aparelho já descontou o gol: o sync não desconta de novo quando
+// ele aparecer em removidos_hoje.
+function lfSyncMarcarRemocaoAplicada(dbId) {
+    const aplicados = JSON.parse(localStorage.getItem(LF_SYNC_REMOCOES_KEY) || '[]');
+    if (!aplicados.includes(dbId)) aplicados.push(dbId);
+    localStorage.setItem(LF_SYNC_REMOCOES_KEY, JSON.stringify(aplicados));
 }
 
 // Ao abrir o app com sync ativo: esvazia a fila, sobe gols de hoje que
@@ -1723,8 +1747,7 @@ async function lfAdminApagarGol(gol) {
         return;
     }
     removerGolLocal(gol.jogador_id, gol.id);
-    const aplicados = JSON.parse(localStorage.getItem(LF_SYNC_REMOCOES_KEY) || '[]');
-    localStorage.setItem(LF_SYNC_REMOCOES_KEY, JSON.stringify([...aplicados, gol.id]));
+    lfSyncMarcarRemocaoAplicada(gol.id);
     lfSyncInvalidarCacheGeral();
     await lfAdminCarregarGols();
 }

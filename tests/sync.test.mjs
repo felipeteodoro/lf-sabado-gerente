@@ -1071,3 +1071,57 @@ test('admin: sair encerra a sessão', () => {
   world.lfAdminSair();
   assert.equal(world.sessionStorage.getItem('lfAdminPin'), null);
 });
+
+function appComGolNoFeed(respostaDelete) {
+  const carregado = carregarApp({
+    storageInitial: { lfSyncEndpoint: 'https://lf.exemplo.dev' },
+    fetchImpl: async (url, opts) => {
+      if (url.endsWith('/partidas')) return jsonResp({ ok: true, partida: { id: 7 } });
+      if (url.endsWith('/gols')) return jsonResp({ ok: true, gol: { id: 777 } });
+      if (url.includes('/gols/777') && opts?.method === 'DELETE') return respostaDelete(opts);
+      return jsonResp({ ok: true });
+    },
+  });
+  carregado.world.registrarGol(22, 'Felipe Teo.');
+  return carregado;
+}
+
+test('lixeira: gol com mais de 15 min (401) avisa que só o admin apaga e restaura', async () => {
+  const { world, storage } = appComGolNoFeed(() => ({ ok: false, status: 401, json: async () => ({ ok: false }) }));
+  await new Promise(r => setTimeout(r, 0));
+  await world.removerGol(0);
+  assert.equal(JSON.parse(storage.getItem('backupPelada')).golsFeedPartida.length, 1, 'gol voltou pro feed');
+  assert.ok(world._alerts.some(a => /15 min/.test(a) && /admin/i.test(a)), 'mensagem explica o motivo: ' + world._alerts.join(' | '));
+});
+
+test('lixeira: com sessão de admin aberta, o DELETE leva o PIN', async () => {
+  const { world, fetchCalls } = appComGolNoFeed(() => jsonResp({ ok: true }));
+  world.sessionStorage.setItem('lfAdminPin', '4321');
+  await new Promise(r => setTimeout(r, 0));
+  await world.removerGol(0);
+  const del = fetchCalls.find(c => c.url.includes('/gols/777') && c.opts?.method === 'DELETE');
+  assert.equal(del.opts.headers['X-Admin-Pin'], '4321');
+});
+
+test('lixeira: PIN que não vale mais (401 com sessão) fecha a sessão de admin', async () => {
+  const { world } = appComGolNoFeed(() => ({ ok: false, status: 401, json: async () => ({ ok: false }) }));
+  world.sessionStorage.setItem('lfAdminPin', 'velho');
+  await new Promise(r => setTimeout(r, 0));
+  await world.removerGol(0);
+  assert.equal(world.sessionStorage.getItem('lfAdminPin'), null);
+});
+
+test('lixeira: gol apagado no servidor fica marcado como já aplicado (não desconta de novo no sync)', async () => {
+  const { world, storage } = appComGolNoFeed(() => jsonResp({ ok: true }));
+  await new Promise(r => setTimeout(r, 0));
+  await world.removerGol(0);
+  assert.deepEqual(JSON.parse(storage.getItem('lfSyncRemocoesAplicadas') || '[]'), [777]);
+});
+
+test('lixeira: aviso de 15 min pra quem não é admin não entrega a entrada escondida', async () => {
+  const { world } = appComGolNoFeed(() => ({ ok: false, status: 401, json: async () => ({ ok: false }) }));
+  await new Promise(r => setTimeout(r, 0));
+  await world.removerGol(0);
+  assert.ok(world._alerts.length > 0);
+  assert.ok(!world._alerts.some(a => /logo/i.test(a)));
+});
