@@ -107,10 +107,29 @@ function getAvatarUrl(nome) {
     return `https://ui-avatars.com/api/?name=${encodeURIComponent(nome)}&background=141416&color=8ba360&bold=true`;
 }
 
+// Todo texto que entra em innerHTML passa por aqui. Nome de jogador vem do
+// servidor (POST /jogadores é aberto) — cru, um nome com <tag> rodava script
+// em todo celular com sync, e um apóstrofo (D'Ávila) quebrava o avatar.
+function escaparHtml(valor) {
+    if (valor === null || valor === undefined) return '';
+    return String(valor)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+// Foto do jogador com fallback pro avatar por inicial. O nome do fallback vai
+// em data-nome (escapado), nunca dentro do JS do onerror.
+function htmlAvatar(foto, nome, classes) {
+    return `<img src="${escaparHtml(fotoUrl(foto))}" data-nome="${escaparHtml(nome)}" onerror="this.onerror=null; this.src=getAvatarUrl(this.dataset.nome)" alt="${escaparHtml(nome)}" class="${classes}">`;
+}
+
 // Cache-buster nas URLs de foto. Bumpa junto com o sw.js pra forçar
 // o navegador a re-baixar a foto (quebra qualquer cache HTTP do Chrome
 // que tenha prendado uma resposta 404 antiga).
-const FOTOS_VERSION = '55';
+const FOTOS_VERSION = '56';
 function fotoUrl(path) {
     if (!path) return path;
     return path + '?v=' + FOTOS_VERSION;
@@ -237,9 +256,9 @@ function renderLista() {
         const badgeText = jogador.posicao === 'goleiro' ? 'Goleiro' : 'Linha';
 
         card.innerHTML = `
-            <img src="${fotoUrl(jogador.foto)}" onerror="this.onerror=null; this.src=getAvatarUrl('${jogador.nome}')" alt="${jogador.nome}" class="w-10 h-10 object-cover rounded-md mr-3 border border-white/10 bg-black/50">
+            ${htmlAvatar(jogador.foto, jogador.nome, 'w-10 h-10 object-cover rounded-md mr-3 border border-white/10 bg-black/50')}
             <div class="flex flex-col flex-1 overflow-hidden">
-                <span class="font-bold text-sm leading-tight truncate text-white">${jogador.nome}</span>
+                <span class="font-bold text-sm leading-tight truncate text-white">${escaparHtml(jogador.nome)}</span>
                 <button type="button" data-edit-posicao="${jogador.id}" class="position-badge border px-1.5 py-[1px] rounded mt-1 w-max ${badgeColor} hover:opacity-80 transition-opacity inline-flex items-center gap-1" title="Alterar posicao (linha/goleiro)">
                     ${badgeText}<i class="fa-solid fa-gear text-[9px] opacity-60"></i>
                 </button>
@@ -534,7 +553,7 @@ function renderTimes(times) {
         const header = document.createElement('div');
         header.className = `px-4 py-2 flex justify-between items-center bg-black/40 border-b border-white/5`;
         header.innerHTML = `
-            <span class="font-teko text-2xl uppercase tracking-widest text-brand mt-1 drop-shadow-md">${time.nome}</span>
+            <span class="font-teko text-2xl uppercase tracking-widest text-brand mt-1 drop-shadow-md">${escaparHtml(time.nome)}</span>
             <div class="flex items-center gap-3">
                 <span class="text-xs font-bold px-2 py-1 bg-white/5 rounded text-zinc-300 border border-white/5">${time.jogadores.length}/5</span>
                 ${time.jogadores.length < 5 ? `<button onclick="abrirModalSubSorteio(${times.indexOf(time)})" class="btn-config-time text-brand hover:text-white bg-white/5 border border-white/10 hover:bg-[var(--c-brand)] rounded px-2 py-1 text-xs transition-colors shadow-lg" title="Adicionar jogador à vaga"><i class="fa-solid fa-plus opacity-80"></i></button>` : ''}
@@ -556,8 +575,8 @@ function renderTimes(times) {
             li.innerHTML = `
                 <div class="flex items-center gap-3 flex-1 overflow-hidden">
                     ${iconePosicao}
-                    <img src="${fotoUrl(j.foto)}" onerror="this.onerror=null; this.src=getAvatarUrl('${j.nome}')" class="w-8 h-8 object-cover rounded-md border border-white/10 bg-black/50 shrink-0 shadow-md">
-                    <span class="font-bold text-white truncate">${j.nome}</span>
+                    ${htmlAvatar(j.foto, j.nome, 'w-8 h-8 object-cover rounded-md border border-white/10 bg-black/50 shrink-0 shadow-md')}
+                    <span class="font-bold text-white truncate">${escaparHtml(j.nome)}</span>
                 </div>
                 <div class="flex gap-1 shrink-0 btn-config-time">
                     <button onclick="abrirModalSubSorteio(${times.indexOf(time)}, ${j.id})" class="text-zinc-400 hover:text-brand p-2 transition-colors drop-shadow-md" title="Trocar de lugar"><i class="fa-solid fa-right-left"></i></button>
@@ -621,8 +640,8 @@ function abrirModalSubSorteio(timeIndex, jogadorSaindoId = null) {
             const btn = document.createElement('button');
             btn.className = "w-full text-left p-3 mb-2 bg-black/40 hover:bg-white/10 rounded border border-white/5 hover:border-[var(--c-brand-light)] font-bold text-white transition-colors flex items-center gap-3";
             btn.innerHTML = `
-                <img src="${fotoUrl(j.foto)}" onerror="this.onerror=null; this.src=getAvatarUrl('${j.nome}')" class="w-8 h-8 object-cover rounded-md bg-black/80 border border-white/10">
-                ${j.nome}
+                ${htmlAvatar(j.foto, j.nome, 'w-8 h-8 object-cover rounded-md bg-black/80 border border-white/10')}
+                ${escaparHtml(j.nome)}
             `;
             btn.onclick = () => efetivarSubSorteio(j.id);
             lista.appendChild(btn);
@@ -787,10 +806,10 @@ function renderGolsPartida() {
         const item = document.createElement('div');
         item.className = 'flex items-center gap-3 bg-black/40 border border-white/5 rounded p-2.5';
         item.innerHTML = `
-            <img src="${fotoUrl(gol.foto)}" onerror="this.onerror=null; this.src=getAvatarUrl('${gol.nome}')" class="w-9 h-9 object-cover rounded-md bg-black/80 border border-white/10 shrink-0">
-            <span class="font-bold text-white truncate flex-grow">${gol.nome}</span>
+            ${htmlAvatar(gol.foto, gol.nome, 'w-9 h-9 object-cover rounded-md bg-black/80 border border-white/10 shrink-0')}
+            <span class="font-bold text-white truncate flex-grow">${escaparHtml(gol.nome)}</span>
             <span class="led-text text-brand text-lg tabular-nums shrink-0">${gol.minuto}'</span>
-            <button type="button" data-remove-gol="${realIdx}" class="ml-2 text-zinc-500 hover:text-red-400 transition-colors shrink-0" title="Remover gol" aria-label="Remover gol de ${gol.nome}">
+            <button type="button" data-remove-gol="${realIdx}" class="ml-2 text-zinc-500 hover:text-red-400 transition-colors shrink-0" title="Remover gol" aria-label="Remover gol de ${escaparHtml(gol.nome)}">
                 <i class="fa-solid fa-trash-can text-base"></i>
             </button>
         `;
@@ -882,8 +901,8 @@ function renderListaJogadoresModal(lista) {
         const btn = document.createElement('button');
         btn.className = "jogador-item-modal w-full text-left p-3 mb-2 bg-black/40 hover:bg-white/10 rounded border border-white/5 hover:border-[var(--c-brand-light)] font-bold text-white transition-colors flex items-center gap-3";
         btn.innerHTML = `
-            <img src="${fotoUrl(j.foto)}" onerror="this.onerror=null; this.src=getAvatarUrl('${j.nome}')" class="w-8 h-8 object-cover rounded-md bg-black/80 border border-white/10">
-            <span class="nome-jogador">${j.nome}</span>
+            ${htmlAvatar(j.foto, j.nome, 'w-8 h-8 object-cover rounded-md bg-black/80 border border-white/10')}
+            <span class="nome-jogador">${escaparHtml(j.nome)}</span>
         `;
         btn.onclick = () => registrarGol(j.id, j.nome);
         listaModal.appendChild(btn);
@@ -1031,9 +1050,9 @@ function renderListaArtilheiros(arrayArtilheiros) {
         div.innerHTML = `
             <div class="flex items-center gap-4">
                 <span class="font-black text-zinc-500 w-4">${colocacao}º</span>
-                <img src="${fotoUrl(jogador.foto)}" onerror="this.onerror=null; this.src=getAvatarUrl('${jogador.nome}')" class="w-12 h-12 object-cover rounded-md border border-white/10 bg-black/50 shadow-md">
+                ${htmlAvatar(jogador.foto, jogador.nome, 'w-12 h-12 object-cover rounded-md border border-white/10 bg-black/50 shadow-md')}
                 <div class="flex flex-col">
-                    <span class="font-bold text-white text-lg leading-tight">${jogador.nome}</span>
+                    <span class="font-bold text-white text-lg leading-tight">${escaparHtml(jogador.nome)}</span>
                     ${stats}
                 </div>
             </div>

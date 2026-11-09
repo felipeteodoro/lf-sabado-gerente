@@ -916,3 +916,67 @@ test('flush concorrente (boot + online) não manda a fila em dobro', async () =>
   await esperarBoot();
   assert.equal(fetchCalls.filter((c) => c.url.endsWith('/presencas')).length, 1);
 });
+
+// --- Escapar nomes no HTML (auditoria ub-mode 2026-11-08) ---
+// Nome de jogador vem do servidor (POST /jogadores não tem auth) e era
+// interpolado cru em innerHTML e no onerror inline → XSS em todo celular.
+
+// Captura o innerHTML de tudo que o app cria com createElement.
+function capturarElementos(world) {
+  const criados = [];
+  world.document.createElement = () => { const el = makeEl(); criados.push(el); return el; };
+  return () => criados.map((el) => el.innerHTML).join('\n');
+}
+
+const NOME_MALICIOSO = '<img src=x onerror="alert(1)">';
+
+test('escaparHtml: escapa & < > " \'', () => {
+  const { world } = carregarApp();
+  assert.equal(world.escaparHtml(`a&b<c>"d"'e'`), 'a&amp;b&lt;c&gt;&quot;d&quot;&#39;e&#39;');
+  assert.equal(world.escaparHtml(null), '');
+  assert.equal(world.escaparHtml(7), '7');
+});
+
+test('artilharia: nome malicioso do servidor vira texto, não HTML', () => {
+  const { world } = carregarApp();
+  const html = capturarElementos(world);
+  world.renderListaArtilheiros([{ nome: NOME_MALICIOSO, gols: 3, foto: '' }]);
+  const saida = html();
+  assert.ok(!saida.includes('<img src=x'), 'tag do nome não pode sair crua');
+  assert.ok(saida.includes('&lt;img src=x onerror=&quot;alert(1)&quot;&gt;'), 'nome aparece escapado');
+});
+
+test('avatar: fallback lê o nome de data-nome, nunca de JS inline (apóstrofo não quebra)', () => {
+  const { world } = carregarApp();
+  const html = capturarElementos(world);
+  world.renderListaArtilheiros([{ nome: "D'Ávila", gols: 1, foto: 'fotos/x.jpg' }]);
+  const saida = html();
+  assert.ok(!saida.includes("getAvatarUrl('"), 'nome não pode ir dentro do onerror');
+  assert.ok(saida.includes('data-nome="D&#39;Ávila"'), 'nome vai escapado em data-nome');
+  assert.ok(saida.includes('getAvatarUrl(this.dataset.nome)'));
+});
+
+test('avatar: foto com aspas não injeta atributo', () => {
+  const { world } = carregarApp();
+  const html = capturarElementos(world);
+  world.renderListaArtilheiros([{ nome: 'Ok', gols: 1, foto: 'x" onload="alert(1)' }]);
+  assert.ok(!html().includes('" onload="'), 'aspas da foto escapadas');
+});
+
+test('feed de gols e lista de presença também escapam o nome', () => {
+  const { world } = carregarApp({
+    storageInitial: {
+      backupPelada: JSON.stringify({
+        jogadoresData: [{ id: 99, nome: NOME_MALICIOSO, posicao: 'linha', presente: false, foto: '' }],
+        timesSorteadosGlobal: [], tempoRestante: 420, golsPartidaAtual: 0, golsJogadorPartida: {},
+        golsFeedPartida: [{ id: 99, dbId: null, nome: NOME_MALICIOSO, foto: '', minuto: '01:00' }],
+      }),
+    },
+  });
+  const html = capturarElementos(world);
+  world.renderLista();
+  world.renderGolsPartida();
+  const saida = html();
+  assert.ok(saida.length > 0, 'renderizou algo');
+  assert.ok(!saida.includes('<img src=x'), 'nenhum nome cru');
+});
