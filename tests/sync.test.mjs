@@ -980,3 +980,21 @@ test('feed de gols e lista de presença também escapam o nome', () => {
   assert.ok(saida.length > 0, 'renderizou algo');
   assert.ok(!saida.includes('<img src=x'), 'nenhum nome cru');
 });
+
+test('artilharia Geral: gols/partidas/presencas do servidor também escapam', () => {
+  const { world } = carregarApp();
+  const html = capturarElementos(world);
+  world.renderListaArtilheiros([{ nome: 'Ok', gols: NOME_MALICIOSO, partidas: NOME_MALICIOSO, presencas: NOME_MALICIOSO, foto: '' }]);
+  const saida = html();
+  assert.ok(!saida.includes('<img src=x'), 'número vindo do servidor não pode sair cru');
+  assert.ok(saida.includes('&lt;img src=x'), 'aparece escapado');
+});
+
+test('artilharia Geral: números normais continuam iguais', () => {
+  const { world } = carregarApp();
+  const html = capturarElementos(world);
+  world.renderListaArtilheiros([{ nome: 'Ok', gols: 6, partidas: 10, presencas: 4, foto: '' }]);
+  const saida = html();
+  assert.ok(saida.includes('10J · 4x · 1.50/j'));
+  assert.match(saida, />\s*6\s*</);
+});

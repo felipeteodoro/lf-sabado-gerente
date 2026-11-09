@@ -1041,7 +1041,7 @@ function renderListaArtilheiros(arrayArtilheiros) {
                 ? (jogador.gols / jogador.presencas).toFixed(2)
                 : '0.00';
             stats = `<span class="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mt-0.5">`
-                  + `${jogador.partidas}J · ${jogador.presencas}x · ${media}/j`
+                  + `${escaparHtml(jogador.partidas)}J · ${escaparHtml(jogador.presencas)}x · ${media}/j`
                   + `</span>`;
         }
 
@@ -1059,7 +1059,7 @@ function renderListaArtilheiros(arrayArtilheiros) {
             <div class="flex items-center gap-3">
                 ${medalha}
                 <div class="bg-[var(--c-brand)] border border-white/10 text-white font-teko w-10 h-10 rounded text-center leading-[40px] text-[32px] shadow-[0_0_15px_rgba(139,163,96,0.2)]">
-                    ${jogador.gols}
+                    ${escaparHtml(jogador.gols)}
                 </div>
             </div>
         `;
