@@ -69,6 +69,9 @@ let jogadoresData = [
     { id: 55, nome: "Arthur Lin.", posicao: "linha", presente: false, foto: "fotos/arthur_lin_v2.jpg" },
     { id: 56, nome: "Heitor", posicao: "linha", presente: false, foto: "fotos/heitor_v2.jpg" }
 ];
+// Ids da lista fixa (antes de qualquer backup). Quem não está aqui é
+// convidado criado na hora: fica em `jogadoresLocais` e pode ser removido.
+const IDS_FIXOS = new Set(jogadoresData.map(j => j.id));
 
 let timesSorteadosGlobal = [];
 
@@ -253,10 +256,9 @@ function arquivarDia(dataSalva, artilharia, backup) {
 // Jogador criado na hora (adicionarPlayer) só existia dentro do backupPelada.
 // Roda antes do init restaurar o backup: jogadoresData ainda é a lista fixa.
 function guardarJogadoresLocais(backup) {
-    const fixos = new Set(jogadoresData.map(j => j.id));
     const porId = new Map(lerJogadoresLocais().map(j => [j.id, j]));
     for (const j of (backup?.jogadoresData || [])) {
-        if (!fixos.has(j.id)) porId.set(j.id, { ...j, presente: false });
+        if (!IDS_FIXOS.has(j.id)) porId.set(j.id, { ...j, presente: false });
     }
     if (porId.size > 0) localStorage.setItem('jogadoresLocais', JSON.stringify([...porId.values()]));
 }
@@ -312,6 +314,7 @@ function renderLista() {
                     ${badgeText}<i class="fa-solid fa-gear text-[9px] opacity-60"></i>
                 </button>
             </div>
+            ${IDS_FIXOS.has(jogador.id) ? '' : `<button type="button" data-remover-convidado="${jogador.id}" class="ml-2 shrink-0 text-zinc-500 hover:text-red-400 p-1 transition-colors" title="Remover convidado da lista" aria-label="Remover convidado"><i class="fa-solid fa-user-minus text-sm"></i></button>`}
             <div class="ml-2 shrink-0">
                 <div class="w-5 h-5 rounded border flex items-center justify-center transition-colors ${jogador.presente ? 'border-[var(--c-brand-light)] bg-[var(--c-brand)]' : 'border-white/10 bg-black/40'}">
                     ${jogador.presente ? '<i class="fa-solid fa-check text-white drop-shadow-md text-xs"></i>' : ''}
@@ -329,6 +332,31 @@ function renderLista() {
             abrirModalEditarPosicao(Number(btn.dataset.editPosicao));
         });
     });
+    container.querySelectorAll('[data-remover-convidado]').forEach(btn => {
+        btn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            removerConvidado(Number(btn.dataset.removerConvidado));
+        });
+    });
+}
+
+// Convidado criado na hora fica na lista toda semana (jogadoresLocais) até
+// alguém remover. Só neste celular: gols dele no servidor continuam.
+function removerConvidado(id) {
+    const jogador = jogadoresData.find(j => j.id === id);
+    if (!jogador || IDS_FIXOS.has(id)) return;
+    if (jogador.presente) {
+        alert(`Desmarque a presença de ${jogador.nome} antes de remover.`);
+        return;
+    }
+    if (!confirm(`Remover ${jogador.nome} da lista?\n\nEle some deste celular. Os gols dele que já estão no servidor continuam.`)) return;
+    jogadoresData = jogadoresData.filter(j => j.id !== id);
+    localStorage.setItem('jogadoresLocais', JSON.stringify(lerJogadoresLocais().filter(j => j.id !== id)));
+    const total = document.getElementById('total-jogadores');
+    if (total) total.innerText = jogadoresData.length;
+    renderLista();
+    atualizarContador();
+    salvarBackup();
 }
 
 // === EDITAR POSICAO (linha/goleiro) ===

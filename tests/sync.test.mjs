@@ -1152,3 +1152,52 @@ test('arquivo: sem conexão o aviso diz "sem conexão" (não o erro técnico do 
   assert.equal(await world.sincronizarDiaArquivado(dia), false);
   assert.ok(world._alerts.some((a) => a.includes('(sem conexão)')));
 });
+
+// --- Convidados: ficam toda semana, mas dá pra remover (decisão do Felipe) ---
+
+const comConvidado = (extra = {}) => ({
+  jogadoresLocais: JSON.stringify([{ id: 57, nome: 'Thiago', posicao: 'linha', presente: false, foto: '' }]),
+  ...extra,
+});
+const listaSalva = (world, storage) => { world.salvarBackup(); return JSON.parse(storage.getItem('backupPelada')).jogadoresData; };
+
+test('remover convidado: some da lista e não volta no dia seguinte', () => {
+  const { world, storage } = carregarApp({ storageInitial: comConvidado() });
+  assert.ok(listaSalva(world, storage).some((j) => j.id === 57));
+  world.removerConvidado(57);
+  assert.ok(!listaSalva(world, storage).some((j) => j.id === 57));
+  assert.deepEqual(JSON.parse(storage.getItem('jogadoresLocais')), []);
+  // dia seguinte: o reset não traz ele de volta
+  const amanha = carregarApp({
+    storageInitial: { dataPelada: ONTEM.toDateString(), backupPelada: storage.getItem('backupPelada'), jogadoresLocais: storage.getItem('jogadoresLocais') },
+  });
+  assert.ok(!listaSalva(amanha.world, amanha.storage).some((j) => j.id === 57));
+});
+
+test('remover convidado: jogador da lista fixa não é removível', () => {
+  const { world, storage } = carregarApp();
+  world.removerConvidado(1);
+  assert.ok(listaSalva(world, storage).some((j) => j.id === 1));
+});
+
+test('remover convidado: presente precisa ser desmarcado antes; cancelar mantém', () => {
+  const { world, storage } = carregarApp({ storageInitial: comConvidado() });
+  world.togglePresenca(57);
+  world.removerConvidado(57);
+  assert.ok(world._alerts.some((a) => /Desmarque a presença de Thiago/.test(a)));
+  assert.ok(listaSalva(world, storage).some((j) => j.id === 57));
+  world.togglePresenca(57);
+  world._confirmAnswer = false;
+  world.removerConvidado(57);
+  assert.ok(listaSalva(world, storage).some((j) => j.id === 57), 'cancelou');
+});
+
+test('lista de presença: só convidado tem o botão de remover', () => {
+  const { world } = carregarApp({ storageInitial: comConvidado() });
+  const criados = [];
+  world.document.createElement = () => { const el = makeEl(); criados.push(el); return el; };
+  world.renderLista();
+  const cardDo = (nome) => criados.find((el) => el.innerHTML.includes(`>${nome}<`));
+  assert.ok(cardDo('Thiago').innerHTML.includes('data-remover-convidado="57"'));
+  assert.ok(!cardDo('Râneer').innerHTML.includes('data-remover-convidado'));
+});
