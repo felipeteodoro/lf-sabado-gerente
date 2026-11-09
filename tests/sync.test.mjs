@@ -1068,3 +1068,109 @@ test('botão Sync: cancelar não muda nada; vazio desliga; barra final é removi
   assert.equal(storage.getItem('lfSyncEndpoint'), null, 'vazio desliga');
   assert.ok(world._alerts.some((a) => /desligado/i.test(a)));
 });
+
+test('mesclarArtilhariaDoDia: só sobe, ignora slug, foto do jogador local', () => {
+  const { world } = carregarApp();
+  const r = world.mesclarArtilhariaDoDia(
+    { 1: { nome: 'Râneer', gols: 5, foto: 'a' }, 22: { nome: 'Felipe Teo.', gols: 1, foto: 'b' } },
+    [{ id: '1', nome: 'Râneer', gols: 2 }, { id: '22', nome: 'Felipe Teo.', gols: 3 }, { id: 'slug-velho', nome: 'X', gols: 9 }, { id: '45', nome: 'Miné', gols: 1 }],
+    [{ id: 45, foto: 'fotos/mine_v2.jpg' }],
+  );
+  assert.equal(r[1].gols, 5, 'local maior fica');
+  assert.equal(r[22].gols, 3, 'servidor maior sobe');
+  assert.equal(r[45].foto, 'fotos/mine_v2.jpg');
+  assert.equal(r['slug-velho'], undefined);
+  assert.deepEqual(Object.keys(world.mesclarArtilhariaDoDia({}, undefined, [])), []);
+});
+
+test('aplicarJogadorDoServidor: posição e foto mudam; presente nunca', () => {
+  const { world } = carregarApp();
+  const local = { id: 1, posicao: 'linha', foto: 'fotos/a.jpg', presente: true };
+  assert.equal(world.aplicarJogadorDoServidor(local, { posicao: 'linha', foto: 'https://x/fotos/a.jpg', presente: false }), false);
+  assert.equal(world.aplicarJogadorDoServidor(local, { posicao: 'goleiro', foto: null }), true);
+  assert.equal(local.posicao, 'goleiro');
+  assert.equal(local.foto, 'fotos/a.jpg', 'foto null não apaga');
+  assert.equal(world.aplicarJogadorDoServidor(local, { posicao: 'goleiro', foto: 'https://x/fotos/b.jpg' }), true);
+  assert.equal(local.foto, 'fotos/b.jpg');
+  assert.equal(local.presente, true);
+});
+
+test('lfSyncAvisarGolsEnviados: avisa sucesso e falha, cala com gol em voo', () => {
+  const { world } = carregarApp();
+  world.lfSyncAvisarGolsEnviados({ ok: true, enviados: 0 });
+  world.lfSyncAvisarGolsEnviados({ ok: false, enviados: 0, reason: 'gol-em-voo' });
+  assert.equal(world._alerts.length, 0);
+  world.lfSyncAvisarGolsEnviados({ ok: true, enviados: 2 });
+  world.lfSyncAvisarGolsEnviados({ ok: false, enviados: 0 });
+  assert.match(world._alerts[0], /^2 gol\(s\)/);
+  assert.match(world._alerts[1], /Não foi possível/);
+});
+
+test('lfSyncRemoverGol: sem dbId ou sem sync não chama o servidor', async () => {
+  const off = carregarApp();
+  assert.equal(await off.world.lfSyncRemoverGol(5), true);
+  assert.equal(off.fetchCalls.length, 0);
+  const on = carregarApp({ storageInitial: { lfSyncEndpoint: 'https://lf.exemplo.dev' }, fetchImpl: servidorFake().fetchImpl });
+  await esperarBoot();
+  const antes = on.fetchCalls.length;
+  assert.equal(await on.world.lfSyncRemoverGol(null), true);
+  assert.equal(on.fetchCalls.length, antes);
+});
+
+test('lfSyncRemoverGol: DELETE ok/erro/offline e invalida o /estado', async () => {
+  let modo = 'ok';
+  const srv = servidorFake();
+  const { world, fetchCalls } = carregarApp({
+    storageInitial: { lfSyncEndpoint: 'https://lf.exemplo.dev' },
+    fetchImpl: async (url, opts) => {
+      if (opts && opts.method === 'DELETE') {
+        if (modo === 'offline') throw new TypeError('Failed to fetch');
+        return { ok: modo === 'ok', json: async () => ({ ok: true }) };
+      }
+      return srv.fetchImpl(url, opts);
+    },
+  });
+  await esperarBoot();
+  assert.equal(await world.lfSyncRemoverGol(77), true);
+  assert.ok(fetchCalls.some((c) => c.url.endsWith('/gols/77') && c.opts.method === 'DELETE'));
+  await world.lfSyncCarregarArtilharia();
+  assert.equal(fetchCalls.filter((c) => c.url.endsWith('/estado')).length, 2, 'releu depois do DELETE');
+  modo = 'erro';
+  assert.equal(await world.lfSyncRemoverGol(78), false);
+  modo = 'offline';
+  assert.equal(await world.lfSyncRemoverGol(79), false);
+});
+
+test('lfSyncVincularDbId: sem item correspondente ou sem gol, não mexe no feed', async () => {
+  const { world, storage } = carregarApp({
+    storageInitial: {
+      backupPelada: JSON.stringify({
+        jogadoresData: [], timesSorteadosGlobal: [], tempoRestante: 420, golsPartidaAtual: 1, golsJogadorPartida: {},
+        golsFeedPartida: [{ id: 22, dbId: 5, nome: 'Felipe Teo.', foto: '', minuto: '01:00' }],
+      }),
+    },
+  });
+  world.lfSyncVincularDbId(22, { gol: { id: 9 } }); // já tem dbId
+  world.lfSyncVincularDbId(1, { gol: { id: 9 } });  // jogador fora do feed
+  world.lfSyncVincularDbId(22, { ok: true });        // resposta sem gol
+  world.salvarBackup();
+  assert.equal(JSON.parse(storage.getItem('backupPelada')).golsFeedPartida[0].dbId, 5);
+});
+
+test('vista geral: só quem tem gol, foto do servidor com fallback na local', async () => {
+  const { world } = carregarApp({
+    storageInitial: { lfSyncEndpoint: 'https://lf.exemplo.dev' },
+    fetchImpl: async () => jsonResp(ESTADO_OK([
+      { id: '1', nome: 'Râneer', gols: 4, foto: null, partidas: 2, presencas: 3 },
+      { id: '22', nome: 'Felipe Teo.', gols: 0, foto: 'https://x/fotos/f.jpg' },
+      { id: '45', nome: 'Miné', gols: 8, foto: 'https://x/fotos/mine.jpg' },
+    ])),
+  });
+  await esperarBoot();
+  const geral = JSON.parse(JSON.stringify(await world.lfSyncArtilhariaGeral()));
+  assert.deepEqual(geral.map((g) => g.nome), ['Râneer', 'Miné']);
+  assert.equal(geral[0].foto, 'fotos/raneer_v2.jpg', 'sem foto no servidor usa a local');
+  assert.equal(geral[1].foto, 'https://x/fotos/mine.jpg');
+  assert.equal(geral[1].partidas, null);
+  assert.equal(geral[0].presencas, 3);
+});
