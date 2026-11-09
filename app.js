@@ -1366,7 +1366,7 @@ async function lfSyncEnviarGolsPendentesExecutar() {
         }
     } catch (err) {
         // Offline: tenta de novo no próximo boot / evento online / botão Sync
-        console.warn('[lfSyncEnviarGolsPendentes] falhou:', err?.message);
+        console.warn('[lfSyncEnviarGolsPendentes] falhou:', err);
         resultado.ok = false;
     }
     if (resultado.enviados > 0) lfSyncInvalidarCacheGeral();
