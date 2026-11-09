@@ -223,6 +223,21 @@
         </div>
     </div>
 
+    <!-- ARQUIVO: dias anteriores com gols que não chegaram no servidor (aparece ao abrir o app) -->
+    <div id="modal-arquivo" class="fixed inset-0 bg-black/80 backdrop-blur-md z-50 hidden flex-col items-center justify-end sm:justify-center p-4">
+        <div class="glass-panel w-full max-w-md overflow-hidden transform transition-all flex flex-col max-h-[85vh]">
+            <div class="p-4 border-b border-white/10 flex justify-between items-center shrink-0 bg-black/40">
+                <h3 class="font-teko text-2xl uppercase tracking-widest text-brand mt-1 drop-shadow-md">Dias não sincronizados</h3>
+                <button onclick="fecharLembreteArquivo()" class="text-zinc-500 hover:text-white text-2xl leading-none" aria-label="Fechar">&times;</button>
+            </div>
+            <p class="px-4 pt-4 text-sm text-zinc-400 font-bold">Esses dias têm gols guardados só neste celular. Sincronize pra mandar pro servidor, ou apague. Depois de 8 dias o arquivo some sozinho.</p>
+            <div id="arquivo-lista" class="p-4 space-y-2 overflow-y-auto"></div>
+            <div class="p-4 border-t border-white/10 shrink-0">
+                <button type="button" onclick="fecharLembreteArquivo()" class="w-full py-3 rounded-lg bg-white/5 hover:bg-white/10 text-white font-bold uppercase tracking-wider transition-colors">Depois</button>
+            </div>
+        </div>
+    </div>
+
     <!-- NAVEGAÇÃO INFERIOR -->
     <nav class="glass-panel rounded-none border-b-0 border-l-0 border-r-0 border-t border-white/10 fixed bottom-0 w-full z-40">
         <div class="max-w-3xl mx-auto flex justify-around">
@@ -241,7 +256,7 @@
         </div>
     </nav>
 
-    <script src="app.js?v=58"></script>
+    <script src="app.js?v=62"></script>
     <script>
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => {

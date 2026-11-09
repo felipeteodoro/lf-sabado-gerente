@@ -78,7 +78,7 @@ Convenções da camada: funções prefixadas `lfSync*`, estado novo vai em chave
 - **Busca no modal de gol** usa `normalizarTexto()` (NFD + strip diacríticos). Não troque por `.toLowerCase()` direto — quebra "Rane" → "Râneer".
 - **Minuto do gol** é derivado de `TEMPO_TOTAL - tempoRestante`, com clamp `00:00–07:00` em `minutoGolAtual()`. Não remova o clamp — o timer passa do zero às vezes.
 - **`localStorage` quota**: backup é JSON serializado de toda a estrutura. ~5MB de limite; sem risco hoje mas evite guardar histórico completo de partidas.
-- **Reset à meia-noite** em `verificarLimpezaMeiaNoite()` zera a tela do dia, mas **não apaga**: o dia anterior (artilharia + feed) vai pra `arquivoDias` (últimos 3 dias) e jogadores criados na hora vão pra `jogadoresLocais`. Não confunda com reset de teste.
+- **Reset à meia-noite** em `verificarLimpezaMeiaNoite()` zera a tela do dia, mas **não apaga**: o dia anterior (artilharia + feed) vai pra `arquivoDias` e jogadores criados na hora vão pra `jogadoresLocais`. Ao abrir o app, `revisarArquivo()` apaga os dias que o servidor já tem e lembra dos outros (Sincronizar / Apagar / Depois) até resolver; nada fica mais de 8 dias. O reset nunca pode impedir o app de abrir (JSON corrompido ou storage cheio só pulam o arquivo). Não confunda com reset de teste.
 
 ## O que **não** fazer
 

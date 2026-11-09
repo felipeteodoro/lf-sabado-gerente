@@ -4,9 +4,9 @@
 // ReferenceError (TDZ) quando o timer dispara antes do fim do script.
 const LF_SYNC_ENDPOINT_KEY = 'lfSyncEndpoint';
 
-// Quantos dias anteriores o reset da meia-noite guarda em `arquivoDias`
-// (antes apagava — ver verificarLimpezaMeiaNoite).
-const DIAS_NO_ARQUIVO = 3;
+// Por quantos dias um dia anterior fica guardado em `arquivoDias` quando não
+// foi sincronizado (ver revisarArquivo). A API aceita gol de até 8 dias atrás.
+const DIAS_NO_ARQUIVO = 8;
 
 // Controle de concorrência do sync (ver lfSyncFlush / lfSyncEnviarGolsPendentes).
 // Gols em envio: a reconciliação espera eles acabarem pra não duplicar.
@@ -114,7 +114,7 @@ function getAvatarUrl(nome) {
 // Cache-buster nas URLs de foto. Bumpa junto com o sw.js pra forçar
 // o navegador a re-baixar a foto (quebra qualquer cache HTTP do Chrome
 // que tenha prendado uma resposta 404 antiga).
-const FOTOS_VERSION = '58';
+const FOTOS_VERSION = '62';
 function fotoUrl(path) {
     if (!path) return path;
     return path + '?v=' + FOTOS_VERSION;
@@ -199,9 +199,10 @@ function init() {
     }, 0);
 }
 
-// Dia novo: a tela começa zerada, como sempre. Mas o dia anterior vai pro
-// `arquivoDias` (últimos DIAS_NO_ARQUIVO) em vez de ser apagado, e os
-// jogadores criados na hora ficam em `jogadoresLocais`.
+// Dia novo: a tela começa zerada, como sempre. Mas o dia anterior vai pra
+// `arquivoDias` em vez de ser apagado, e os jogadores criados na hora ficam em
+// `jogadoresLocais`. Ao abrir o app, revisarArquivo() apaga o que o servidor
+// já tem e lembra do resto (sincronizar ou apagar).
 // Caso real 2026-11-07: o 1º abrir do domingo apagou os gols de sábado e o
 // jogador Thiago do celular do Râneer — não havia como recuperar.
 function verificarLimpezaMeiaNoite() {
@@ -209,28 +210,44 @@ function verificarLimpezaMeiaNoite() {
     const dataHoje = new Date().toDateString();
     if (dataSalva === dataHoje) return;
 
-    const backup = JSON.parse(localStorage.getItem('backupPelada') || 'null');
-    arquivarDia(dataSalva, JSON.parse(localStorage.getItem('artilhariaPelada') || 'null'), backup);
-    guardarJogadoresLocais(backup);
+    // Nada aqui pode impedir o app de abrir: se arquivar falhar (JSON
+    // corrompido, storage cheio), o dia novo começa do mesmo jeito.
+    try {
+        const backup = lerJson('backupPelada', null);
+        arquivarDia(dataSalva, lerJson('artilhariaPelada', null), backup);
+        guardarJogadoresLocais(backup);
+    } catch (err) {
+        console.warn('[reset] não deu pra arquivar o dia anterior:', err);
+    }
     localStorage.removeItem('artilhariaPelada');
     localStorage.removeItem('backupPelada');
     localStorage.setItem('dataPelada', dataHoje);
 }
 
+// JSON do localStorage; ausente ou corrompido vira `padrao`
+function lerJson(chave, padrao) {
+    try {
+        const valor = JSON.parse(localStorage.getItem(chave));
+        return valor ?? padrao;
+    } catch (err) {
+        return padrao;
+    }
+}
+
 function dataIsoLocal(data) {
-    if (isNaN(data)) return 'sem-data';
     const mm = String(data.getMonth() + 1).padStart(2, '0');
     const dd = String(data.getDate()).padStart(2, '0');
     return `${data.getFullYear()}-${mm}-${dd}`;
 }
 
 function arquivarDia(dataSalva, artilharia, backup) {
+    const data = new Date(dataSalva);
+    if (!dataSalva || isNaN(data)) return; // primeiro uso: não há dia anterior
     const feed = backup?.golsFeedPartida || [];
     if (!artilharia && feed.length === 0) return;
-    const arquivo = JSON.parse(localStorage.getItem('arquivoDias') || '{}');
-    arquivo[dataIsoLocal(new Date(dataSalva))] = { artilharia: artilharia || {}, golsFeedPartida: feed };
-    const recentes = Object.keys(arquivo).sort().slice(-DIAS_NO_ARQUIVO);
-    localStorage.setItem('arquivoDias', JSON.stringify(Object.fromEntries(recentes.map(d => [d, arquivo[d]]))));
+    const arquivo = lerJson('arquivoDias', {});
+    arquivo[dataIsoLocal(data)] = { artilharia: artilharia || {}, golsFeedPartida: feed };
+    localStorage.setItem('arquivoDias', JSON.stringify(arquivo));
 }
 
 // Jogador criado na hora (adicionarPlayer) só existia dentro do backupPelada.
@@ -245,7 +262,8 @@ function guardarJogadoresLocais(backup) {
 }
 
 function lerJogadoresLocais() {
-    return JSON.parse(localStorage.getItem('jogadoresLocais') || '[]');
+    const locais = lerJson('jogadoresLocais', []);
+    return Array.isArray(locais) ? locais : [];
 }
 
 // Garante os jogadores locais na lista (sem duplicar quem o backup já trouxe)
@@ -1533,8 +1551,9 @@ async function lfSyncRemoverGol(dbId) {
 }
 
 // Ao abrir o app com sync ativo: esvazia a fila, sobe gols de hoje que
-// faltam no servidor e puxa a artilharia do dia
-lfSyncSincronizarTudo();
+// faltam no servidor e puxa a artilharia do dia. Depois revisa o arquivo de
+// dias anteriores (lembrete de sincronizar/apagar).
+lfSyncSincronizarTudo().catch(() => {}).then(revisarArquivo);
 
 // ============================================================
 // VISTA ARtilHARIA: HOJE vs GERAL (estado declarado antes de registrarGol)
@@ -1608,6 +1627,162 @@ async function lfSyncArtilhariaGeral() {
     } catch (err) {
         return null;
     }
+}
+
+// ============================================================
+// ARQUIVO DE DIAS ANTERIORES: ao abrir o app, apaga o que passou de
+// DIAS_NO_ARQUIVO dias e o que o servidor já tem; o resto vira um lembrete
+// (Sincronizar / Apagar / Depois) a cada abertura até ser resolvido.
+// ============================================================
+
+// Pura: só os dias dos últimos DIAS_NO_ARQUIVO dias (ISO compara como texto)
+function podarArquivo(arquivo, hoje = new Date()) {
+    const limite = dataIsoLocal(new Date(hoje.getFullYear(), hoje.getMonth(), hoje.getDate() - DIAS_NO_ARQUIVO));
+    return Object.fromEntries(Object.entries(arquivo).filter(([dia]) => dia >= limite));
+}
+
+// Gols que o arquivo tem a mais que o servidor naquele dia. Gol que o admin
+// apagou naquele dia conta como "o servidor já sabe" (não é reenviado).
+async function golsFaltandoNoDia(dia, artilharia) {
+    const resp = await fetch(localStorage.getItem(LF_SYNC_ENDPOINT_KEY) + '/estado?data=' + dia);
+    const dados = await resp.json();
+    if (!dados.ok) throw new Error('servidor recusou');
+    const conhecidos = {};
+    for (const a of (dados.artilharia_hoje || [])) conhecidos[String(a.id)] = (conhecidos[String(a.id)] || 0) + a.gols;
+    for (const r of (dados.removidos_hoje || [])) conhecidos[String(r.jogador_id)] = (conhecidos[String(r.jogador_id)] || 0) + 1;
+    return Object.entries(artilharia || {})
+        .map(([id, item]) => ({ id: String(id), nome: item.nome, faltam: (item.gols || 0) - (conhecidos[String(id)] || 0) }))
+        .filter(j => j.faltam > 0);
+}
+
+async function revisarArquivo() {
+    const arquivo = podarArquivo(lerJson('arquivoDias', {}));
+    if (lfSyncAtivo()) {
+        for (const dia of Object.keys(arquivo)) {
+            try {
+                if ((await golsFaltandoNoDia(dia, arquivo[dia].artilharia)).length === 0) delete arquivo[dia];
+            } catch (err) {
+                // offline: sem como saber, o dia continua no lembrete
+            }
+        }
+    }
+    salvarArquivo(arquivo);
+    const pendentes = Object.keys(arquivo).sort();
+    if (pendentes.length > 0) mostrarLembreteArquivo();
+    return pendentes;
+}
+
+function salvarArquivo(arquivo) {
+    try {
+        localStorage.setItem('arquivoDias', JSON.stringify(arquivo));
+    } catch (err) {
+        console.warn('[arquivo] não deu pra salvar:', err);
+    }
+}
+
+async function sincronizarDiaArquivado(dia) {
+    if (!lfSyncAtivo()) {
+        alert('Ligue o Sync (aba Estatísticas) pra mandar esse dia pro servidor.');
+        return false;
+    }
+    const registro = lerJson('arquivoDias', {})[dia];
+    if (!registro) return true;
+    const url = localStorage.getItem(LF_SYNC_ENDPOINT_KEY);
+    let enviados = 0;
+    try {
+        for (const jogador of await golsFaltandoNoDia(dia, registro.artilharia)) {
+            await lfSyncEnviar('/jogadores', { id: jogador.id, nome: jogador.nome });
+            for (let i = 0; i < jogador.faltam; i++) {
+                const resp = await fetch(url + '/gols', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ jogador_id: jogador.id, data: dia, minuto: null }),
+                });
+                const corpo = await resp.json().catch(() => ({}));
+                if (!resp.ok || !corpo.ok) throw new Error(corpo.error || 'HTTP ' + resp.status);
+                enviados++;
+            }
+        }
+    } catch (err) {
+        if (enviados > 0) lfSyncInvalidarCacheGeral();
+        const motivo = err?.name === 'TypeError' ? 'sem conexão' : err.message; // fetch sem rede = TypeError
+        alert(`Não deu pra sincronizar ${formatarDia(dia)} (${motivo}). `
+            + `${enviados} gol(s) foram enviados; o arquivo continua guardado.`);
+        renderLembreteArquivo();
+        return false;
+    }
+    removerDoArquivo(dia);
+    lfSyncInvalidarCacheGeral();
+    alert(enviados > 0
+        ? `${enviados} gol(s) de ${formatarDia(dia)} enviados pro servidor.`
+        : `O servidor já tinha todos os gols de ${formatarDia(dia)}.`);
+    return true;
+}
+
+function apagarDiaArquivado(dia) {
+    if (!confirm(`Apagar o arquivo de ${formatarDia(dia)}?\n\nOs gols desse dia que não estão no servidor vão ser perdidos.`)) return;
+    removerDoArquivo(dia);
+}
+
+function removerDoArquivo(dia) {
+    const arquivo = lerJson('arquivoDias', {});
+    delete arquivo[dia];
+    salvarArquivo(arquivo);
+    renderLembreteArquivo();
+}
+
+function formatarDia(dia) {
+    const [a, m, d] = dia.split('-').map(Number);
+    const semana = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'][new Date(a, m - 1, d).getDay()];
+    return `${semana} ${String(d).padStart(2, '0')}/${String(m).padStart(2, '0')}`;
+}
+
+function mostrarLembreteArquivo() {
+    renderLembreteArquivo();
+    document.getElementById('modal-arquivo')?.classList.remove('hidden');
+    document.getElementById('modal-arquivo')?.classList.add('flex');
+}
+
+function fecharLembreteArquivo() {
+    document.getElementById('modal-arquivo')?.classList.add('hidden');
+    document.getElementById('modal-arquivo')?.classList.remove('flex');
+}
+
+function renderLembreteArquivo() {
+    const lista = document.getElementById('arquivo-lista');
+    const arquivo = lerJson('arquivoDias', {});
+    const dias = Object.keys(arquivo).sort();
+    if (dias.length === 0) {
+        fecharLembreteArquivo();
+        return;
+    }
+    if (!lista) return;
+    lista.innerHTML = '';
+    for (const dia of dias) lista.appendChild(linhaDoArquivo(dia, arquivo[dia]));
+}
+
+// Montada com textContent: nomes e números nunca viram HTML
+function linhaDoArquivo(dia, registro) {
+    const gols = Object.values(registro.artilharia || {}).reduce((n, j) => n + (j.gols || 0), 0);
+    const linha = document.createElement('div');
+    linha.className = 'flex items-center gap-2 bg-black/40 border border-white/5 rounded p-2.5';
+    const texto = document.createElement('span');
+    texto.className = 'font-bold text-white flex-grow';
+    texto.textContent = `${formatarDia(dia)} · ${gols} gols`;
+    const sincronizar = document.createElement('button');
+    sincronizar.type = 'button';
+    sincronizar.className = 'text-xs uppercase tracking-wider px-3 py-2 rounded font-bold btn-primary';
+    sincronizar.textContent = 'Sincronizar';
+    sincronizar.onclick = () => sincronizarDiaArquivado(dia);
+    const apagar = document.createElement('button');
+    apagar.type = 'button';
+    apagar.className = 'text-xs uppercase tracking-wider px-3 py-2 rounded font-bold bg-black/40 text-red-400 border border-red-500/30';
+    apagar.textContent = 'Apagar';
+    apagar.onclick = () => apagarDiaArquivado(dia);
+    linha.appendChild(texto);
+    linha.appendChild(sincronizar);
+    linha.appendChild(apagar);
+    return linha;
 }
 
 // Invalida o cache quando um gol novo pode ter mudado o geral

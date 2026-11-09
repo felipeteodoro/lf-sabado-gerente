@@ -974,20 +974,6 @@ test('reset do dia: jogador local de dias anteriores continua mesmo sem backup',
   assert.ok(JSON.parse(storage.getItem('backupPelada')).jogadoresData.some((j) => j.id === 57));
 });
 
-test('reset do dia: arquivo guarda só os 3 dias mais recentes', () => {
-  const { storage } = carregarApp({
-    storageInitial: {
-      dataPelada: ONTEM.toDateString(),
-      artilhariaPelada: JSON.stringify({ 1: { nome: 'Râneer', gols: 1, foto: '' } }),
-      arquivoDias: JSON.stringify({
-        '2026-10-24': { artilharia: {} }, '2026-10-31': { artilharia: {} }, '2026-11-01': { artilharia: {} },
-      }),
-    },
-  });
-  const dias = Object.keys(JSON.parse(storage.getItem('arquivoDias'))).sort();
-  assert.deepEqual(dias, ['2026-10-31', '2026-11-01', isoLocal(ONTEM)].sort());
-});
-
 test('reset do dia: dia sem nada não cria arquivo; mesmo dia não reseta', () => {
   const vazio = carregarApp({ storageInitial: { dataPelada: ONTEM.toDateString() } });
   assert.equal(vazio.storage.getItem('arquivoDias'), null);
@@ -996,4 +982,173 @@ test('reset do dia: dia sem nada não cria arquivo; mesmo dia não reseta', () =
   });
   assert.equal(JSON.parse(mesmoDia.storage.getItem('artilhariaPelada'))[1].gols, 2);
   assert.equal(mesmoDia.storage.getItem('arquivoDias'), null);
+});
+
+// --- Arquivo: lembrete ao abrir, sincronizar/apagar, 8 dias (pedido do Felipe) ---
+
+const diasAtras = (n) => isoLocal(new Date(Date.now() - n * 24 * 3600 * 1000));
+const arquivoCom = (dias) => JSON.stringify(Object.fromEntries(dias.map(([dia, artilharia]) => [dia, { artilharia, golsFeedPartida: [] }])));
+
+// API fake por dia: { 'YYYY-MM-DD': { '57': 3 } } e removidos por dia
+function apiDias({ porDia = {}, removidosPorDia = {}, falharGols = false } = {}) {
+  const recebidos = [];
+  const fetchImpl = async (url, opts = {}) => {
+    const m = url.match(/\/estado\?data=(\d{4}-\d{2}-\d{2})$/);
+    if (m) {
+      const dia = porDia[m[1]] || {};
+      return jsonResp({
+        ...ESTADO_OK([]),
+        artilharia_hoje: Object.entries(dia).map(([id, gols]) => ({ id, nome: 'x', gols })),
+        removidos_hoje: removidosPorDia[m[1]] || [],
+      });
+    }
+    if (url.endsWith('/gols') && opts.method === 'POST') {
+      if (falharGols) return { ok: false, status: 500, json: async () => ({ ok: false, error: 'banco fora' }) };
+      const corpo = JSON.parse(opts.body);
+      recebidos.push(corpo);
+      porDia[corpo.data] = porDia[corpo.data] || {};
+      porDia[corpo.data][corpo.jogador_id] = (porDia[corpo.data][corpo.jogador_id] || 0) + 1;
+      return jsonResp({ ok: true, partida_id: 9, gol: { id: recebidos.length } });
+    }
+    return jsonResp({ ...ESTADO_OK([]), removidos_hoje: [] });
+  };
+  return { fetchImpl, recebidos, porDia };
+}
+
+test('reset: JSON corrompido no storage não impede o app de abrir e o dia novo começa', () => {
+  const { storage } = carregarApp({
+    storageInitial: {
+      dataPelada: ONTEM.toDateString(),
+      artilhariaPelada: '{quebrado',
+      backupPelada: 'também quebrado',
+      arquivoDias: '[[[',
+      jogadoresLocais: 'x',
+    },
+  });
+  assert.equal(storage.getItem('dataPelada'), new Date().toDateString(), 'reset terminou');
+  assert.equal(storage.getItem('artilhariaPelada'), null);
+  assert.equal(storage.getItem('backupPelada'), null);
+});
+
+test('reset: primeiro uso (sem dataPelada) não cria arquivo', () => {
+  const { storage } = carregarApp({
+    storageInitial: { dataPelada: undefined, artilhariaPelada: JSON.stringify({ 1: { nome: 'R', gols: 1 } }) },
+  });
+  assert.equal(storage.getItem('arquivoDias'), null);
+});
+
+test('arquivo: dias com mais de 8 dias somem ao abrir; até 8 ficam', async () => {
+  const { world, storage } = carregarApp({
+    storageInitial: { arquivoDias: arquivoCom([[diasAtras(9), { 1: { nome: 'R', gols: 1 } }], [diasAtras(8), { 1: { nome: 'R', gols: 1 } }], [diasAtras(1), { 1: { nome: 'R', gols: 2 } }]]) },
+  });
+  const pendentes = await world.revisarArquivo();
+  assert.deepEqual([...pendentes], [diasAtras(8), diasAtras(1)]);
+  assert.deepEqual(Object.keys(JSON.parse(storage.getItem('arquivoDias'))).sort(), [diasAtras(8), diasAtras(1)]);
+});
+
+test('arquivo: dia que o servidor já tem inteiro é apagado sem perguntar', async () => {
+  const api = apiDias({ porDia: { [diasAtras(1)]: { 57: 7, 1: 3 } } });
+  const { world, storage } = carregarApp({
+    storageInitial: {
+      lfSyncEndpoint: 'https://lf.exemplo.dev',
+      arquivoDias: arquivoCom([[diasAtras(1), { 57: { nome: 'Thiago', gols: 7 }, 1: { nome: 'Râneer', gols: 3 } }]]),
+    },
+    fetchImpl: api.fetchImpl,
+  });
+  await esperarBoot();
+  assert.deepEqual([...await world.revisarArquivo()], []);
+  assert.deepEqual(JSON.parse(storage.getItem('arquivoDias')), {});
+  assert.equal(api.recebidos.length, 0, 'nada enviado sem pedir');
+});
+
+test('arquivo: dia faltando no servidor fica pendente; Sincronizar manda só a diferença, com a data do dia', async () => {
+  const dia = diasAtras(1);
+  const api = apiDias({ porDia: { [dia]: { 1: 1 } } });
+  const { world, storage } = carregarApp({
+    storageInitial: {
+      lfSyncEndpoint: 'https://lf.exemplo.dev',
+      arquivoDias: arquivoCom([[dia, { 57: { nome: 'Thiago', gols: 2 }, 1: { nome: 'Râneer', gols: 3 } }]]),
+    },
+    fetchImpl: api.fetchImpl,
+  });
+  await esperarBoot();
+  assert.deepEqual([...await world.revisarArquivo()], [dia]);
+  assert.equal(api.recebidos.length, 0, 'o lembrete não envia sozinho');
+  assert.equal(await world.sincronizarDiaArquivado(dia), true);
+  assert.equal(api.recebidos.length, 4, '2 do Thiago + 2 do Râneer');
+  assert.ok(api.recebidos.every((g) => g.data === dia && g.minuto === null));
+  assert.deepEqual(JSON.parse(storage.getItem('arquivoDias')), {}, 'sincronizado: sai do arquivo');
+  assert.ok(world._alerts.some((a) => /4 gol\(s\)/.test(a)));
+});
+
+test('arquivo: gol apagado pelo admin naquele dia não é reenviado', async () => {
+  const dia = diasAtras(1);
+  const api = apiDias({ porDia: { [dia]: { 1: 1 } }, removidosPorDia: { [dia]: [{ id: 5, jogador_id: '1' }] } });
+  const { world } = carregarApp({
+    storageInitial: { lfSyncEndpoint: 'https://lf.exemplo.dev', arquivoDias: arquivoCom([[dia, { 1: { nome: 'Râneer', gols: 2 } }]]) },
+    fetchImpl: api.fetchImpl,
+  });
+  await esperarBoot();
+  assert.deepEqual([...await world.revisarArquivo()], [], 'servidor 1 + apagado 1 = os 2 do celular');
+});
+
+test('arquivo: erro no servidor mantém o dia guardado e avisa', async () => {
+  const dia = diasAtras(2);
+  const api = apiDias({ falharGols: true });
+  const { world, storage } = carregarApp({
+    storageInitial: { lfSyncEndpoint: 'https://lf.exemplo.dev', arquivoDias: arquivoCom([[dia, { 1: { nome: 'Râneer', gols: 1 } }]]) },
+    fetchImpl: api.fetchImpl,
+  });
+  await esperarBoot();
+  assert.equal(await world.sincronizarDiaArquivado(dia), false);
+  assert.ok(JSON.parse(storage.getItem('arquivoDias'))[dia], 'continua no arquivo');
+  assert.ok(world._alerts.some((a) => /banco fora/.test(a) && /continua guardado/.test(a)));
+});
+
+test('arquivo: sem Sync o dia fica pendente; Sincronizar pede pra ligar o Sync', async () => {
+  const dia = diasAtras(1);
+  const { world, storage, fetchCalls } = carregarApp({
+    storageInitial: { arquivoDias: arquivoCom([[dia, { 1: { nome: 'Râneer', gols: 1 } }]]) },
+  });
+  assert.deepEqual([...await world.revisarArquivo()], [dia]);
+  assert.equal(await world.sincronizarDiaArquivado(dia), false);
+  assert.ok(world._alerts.some((a) => /Sync/.test(a)));
+  assert.equal(fetchCalls.length, 0);
+  assert.ok(JSON.parse(storage.getItem('arquivoDias'))[dia]);
+});
+
+test('arquivo: Apagar pede confirmação; cancelar mantém, confirmar apaga', async () => {
+  const dia = diasAtras(1);
+  const { world, storage } = carregarApp({
+    storageInitial: { arquivoDias: arquivoCom([[dia, { 1: { nome: 'Râneer', gols: 1 } }]]) },
+  });
+  world._confirmAnswer = false;
+  world.apagarDiaArquivado(dia);
+  assert.ok(JSON.parse(storage.getItem('arquivoDias'))[dia]);
+  world._confirmAnswer = true;
+  world.apagarDiaArquivado(dia);
+  assert.deepEqual(JSON.parse(storage.getItem('arquivoDias')), {});
+});
+
+test('arquivo: lembrete mostra o dia e quantos gols guardados', async () => {
+  const dia = diasAtras(1);
+  const { world } = carregarApp({
+    storageInitial: { arquivoDias: arquivoCom([[dia, { 1: { nome: 'Râneer', gols: 3 }, 57: { nome: 'Thiago', gols: 2 } }]]) },
+  });
+  const criados = [];
+  world.document.createElement = () => { const el = makeEl(); criados.push(el); return el; };
+  await world.revisarArquivo();
+  const [a, m, d] = dia.split('-');
+  assert.ok(criados.some((el) => el.textContent.includes(`${d}/${m}`) && el.textContent.includes('5 gols')));
+});
+
+test('arquivo: sem conexão o aviso diz "sem conexão" (não o erro técnico do fetch)', async () => {
+  const dia = diasAtras(1);
+  const { world } = carregarApp({
+    storageInitial: { lfSyncEndpoint: 'https://lf.exemplo.dev', arquivoDias: arquivoCom([[dia, { 1: { nome: 'Râneer', gols: 1 } }]]) },
+    fetchImpl: async () => { throw new TypeError('Failed to fetch'); },
+  });
+  await esperarBoot();
+  assert.equal(await world.sincronizarDiaArquivado(dia), false);
+  assert.ok(world._alerts.some((a) => a.includes('(sem conexão)')));
 });
