@@ -1227,6 +1227,8 @@ function lfSyncConfigurar(url) {
     }
     if (url) localStorage.setItem(LF_SYNC_ENDPOINT_KEY, url);
     else localStorage.removeItem(LF_SYNC_ENDPOINT_KEY);
+    // O que veio do servidor antigo não vale pro novo.
+    lfSyncInvalidarCacheGeral();
     return true;
 }
 

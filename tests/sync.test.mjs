@@ -1408,3 +1408,28 @@ test('invalidar o geral com a vista Geral aberta rebusca do servidor', async () 
   await esperarBoot();
   assert.equal(fetchCalls.filter((c) => c.url.endsWith('/estado')).length, antes + 1);
 });
+
+test('config: trocar o endereço do Sync não reaproveita o /estado do servidor antigo', async () => {
+  const { world, fetchCalls } = carregarApp({
+    fetchImpl: async (url) => new Response(JSON.stringify({ ok: true, artilharia: [], jogadores: [], hoje: {} })),
+  });
+  world.lfSyncConfigurar('https://a.exemplo.dev');
+  await world.lfSyncLerEstado();
+  world.lfSyncConfigurar('https://b.exemplo.dev');
+  await world.lfSyncLerEstado();
+  const estados = fetchCalls.filter(c => c.url.endsWith('/estado')).map(c => c.url);
+  assert.deepEqual(estados.slice(-2), ['https://a.exemplo.dev/estado', 'https://b.exemplo.dev/estado']);
+});
+
+test('config: trocar o endereço limpa a vista Geral em cache', async () => {
+  const { world } = carregarApp({
+    fetchImpl: async (url) => new Response(JSON.stringify({
+      ok: true, jogadores: [], hoje: {},
+      artilharia: url.startsWith('https://a.') ? [{ id: '1', nome: 'Do A', gols: 3 }] : [{ id: '1', nome: 'Do B', gols: 5 }],
+    })),
+  });
+  world.lfSyncConfigurar('https://a.exemplo.dev');
+  assert.equal((await world.lfSyncArtilhariaGeral())[0].nome, 'Do A');
+  world.lfSyncConfigurar('https://b.exemplo.dev');
+  assert.equal((await world.lfSyncArtilhariaGeral())[0].nome, 'Do B');
+});
