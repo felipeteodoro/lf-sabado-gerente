@@ -83,6 +83,7 @@ function carregarApp({ fetchImpl, storageInitial = {} } = {}) {
     setInterval: () => 0,
     clearInterval() {},
     localStorage: storage,
+    sessionStorage: makeStorage(),
     navigator: {},
     document: {
       getElementById: () => makeEl(),
@@ -915,4 +916,158 @@ test('flush concorrente (boot + online) não manda a fila em dobro', async () =>
   await Promise.all([world.lfSyncFlush(), world.lfSyncFlush()]);
   await esperarBoot();
   assert.equal(fetchCalls.filter((c) => c.url.endsWith('/presencas')).length, 1);
+});
+
+// --- Admin: apagar gols do dia (logo do cabeçalho + PIN checado pela API) ---
+
+const ADMIN_URL = 'https://lf.exemplo.dev';
+
+// API fake com gols do dia, PIN e registro de removidos
+function apiAdminFake({ pin = '4321', golsDia = [], hoje = {}, removidos = [] } = {}) {
+  const estado = { golsDia: [...golsDia], hoje: { ...hoje }, removidos: [...removidos], deletes: [] };
+  const fetchImpl = async (url, opts = {}) => {
+    const pinOk = opts.headers?.['X-Admin-Pin'] === pin;
+    if (url.endsWith('/admin/sessao')) {
+      return pinOk ? jsonResp({ ok: true }) : { ok: false, status: 401, json: async () => ({ ok: false }) };
+    }
+    if (url.endsWith('/gols/dia')) return jsonResp({ ok: true, gols: estado.golsDia });
+    const del = url.match(/\/gols\/(\d+)$/);
+    if (del && opts.method === 'DELETE') {
+      if (!pinOk) return { ok: false, status: 401, json: async () => ({ ok: false }) };
+      const id = Number(del[1]);
+      const gol = estado.golsDia.find((g) => g.id === id);
+      estado.deletes.push(id);
+      estado.golsDia = estado.golsDia.filter((g) => g.id !== id);
+      if (gol) {
+        estado.hoje[gol.jogador_id] -= 1;
+        estado.removidos.push({ id, jogador_id: gol.jogador_id });
+      }
+      return jsonResp({ ok: true });
+    }
+    if (url.endsWith('/estado')) {
+      return jsonResp({
+        ...ESTADO_OK([]),
+        artilharia_hoje: Object.entries(estado.hoje).filter(([, g]) => g > 0).map(([id, gols]) => ({ id, nome: 'x', gols })),
+        removidos_hoje: estado.removidos,
+      });
+    }
+    return jsonResp({ ok: true });
+  };
+  return { estado, fetchImpl };
+}
+
+test('aplicarRemocoesDoServidor: desconta só enquanto o local passa do servidor, uma vez por gol', () => {
+  const { world } = carregarApp();
+  const r1 = world.aplicarRemocoesDoServidor(
+    { 1: { nome: 'R', gols: 3 }, 22: { nome: 'F', gols: 1 } },
+    [{ id: '1', gols: 2 }, { id: '22', gols: 1 }],
+    [{ id: 10, jogador_id: '1' }, { id: 11, jogador_id: '22' }],
+    [],
+  );
+  assert.equal(r1.local[1].gols, 2, 'tinha o gol apagado: desconta');
+  assert.equal(r1.local[22].gols, 1, 'já igual ao servidor: não desconta');
+  assert.deepEqual([...r1.aplicados], [10, 11]);
+  const r2 = world.aplicarRemocoesDoServidor(r1.local, [{ id: '1', gols: 2 }], [{ id: 10, jogador_id: '1' }], r1.aplicados);
+  assert.equal(r2.local[1].gols, 2, 'mesma remoção não desconta duas vezes');
+  const r3 = world.aplicarRemocoesDoServidor({ 1: { nome: 'R', gols: 1 } }, [], [{ id: 12, jogador_id: '1' }], []);
+  assert.equal(r3.local[1], undefined, 'chegou a zero: sai da lista');
+});
+
+test('gol apagado pelo admin em outro celular não volta pela reconciliação', async () => {
+  const api = apiAdminFake({ hoje: { 1: 2 }, removidos: [{ id: 10, jogador_id: '1' }] });
+  const { storage, fetchCalls } = carregarApp({
+    storageInitial: {
+      lfSyncEndpoint: ADMIN_URL,
+      lfSyncPartidaId: '31',
+      artilhariaPelada: JSON.stringify({ 1: { nome: 'Râneer', gols: 3, foto: '' } }),
+    },
+    fetchImpl: api.fetchImpl,
+  });
+  await esperarBoot();
+  assert.ok(!fetchCalls.some((c) => c.url.endsWith('/gols') && c.opts?.method === 'POST'), 'nada reenviado');
+  assert.equal(JSON.parse(storage.getItem('artilhariaPelada'))[1].gols, 2, 'Hoje deste celular também desconta');
+});
+
+test('admin: sync desligado avisa; PIN cancelado não abre nada', async () => {
+  const off = carregarApp();
+  await off.world.lfAdminAbrir();
+  assert.ok(off.world._alerts.some((a) => /Sync/.test(a)));
+  const api = apiAdminFake();
+  const { world, fetchCalls } = carregarApp({ storageInitial: { lfSyncEndpoint: ADMIN_URL }, fetchImpl: api.fetchImpl });
+  await esperarBoot();
+  const antes = fetchCalls.length;
+  world.prompt = () => null;
+  await world.lfAdminAbrir();
+  assert.equal(fetchCalls.length, antes);
+});
+
+test('admin: PIN errado não abre sessão; certo abre e lista os gols do dia', async () => {
+  const api = apiAdminFake({ golsDia: [{ id: 7, jogador_id: '1', nome: '<b>Râneer</b>', minuto: '03:10' }] });
+  const { world, fetchCalls } = carregarApp({ storageInitial: { lfSyncEndpoint: ADMIN_URL }, fetchImpl: api.fetchImpl });
+  await esperarBoot();
+  world.prompt = () => '0000';
+  await world.lfAdminAbrir();
+  assert.ok(world._alerts.some((a) => /PIN inválido/.test(a)));
+  assert.equal(world.sessionStorage.getItem('lfAdminPin'), null);
+
+  const criados = [];
+  world.document.createElement = () => { const el = makeEl(); criados.push(el); return el; };
+  world.prompt = () => ' 4321 ';
+  await world.lfAdminAbrir();
+  assert.equal(world.sessionStorage.getItem('lfAdminPin'), '4321');
+  assert.ok(criados.some((el) => el.textContent === '<b>Râneer</b>'), 'nome como texto, nunca HTML');
+  world.prompt = () => { throw new Error('não deveria pedir o PIN de novo'); };
+  await world.lfAdminAbrir();
+  assert.equal(fetchCalls.filter((c) => c.url.endsWith('/admin/sessao')).length, 2);
+});
+
+test('admin: apagar gol confirma, manda o PIN e corrige artilharia e feed deste celular', async () => {
+  const api = apiAdminFake();
+  const { world, storage } = carregarApp({
+    storageInitial: { lfSyncEndpoint: ADMIN_URL, lfSyncPartidaId: '31' },
+    fetchImpl: async (url, opts) => {
+      if (url.endsWith('/gols') && opts?.method === 'POST') { // servidor recebe o gol
+        api.estado.hoje[22] = (api.estado.hoje[22] || 0) + 1;
+        api.estado.golsDia.push({ id: 50, jogador_id: '22', nome: 'Felipe Teo.', minuto: '01:00' });
+        return jsonResp({ ok: true, partida_id: 31, gol: { id: 50 } });
+      }
+      return api.fetchImpl(url, opts);
+    },
+  });
+  await esperarBoot();
+  world.registrarGol(22, 'Felipe Teo.');
+  await esperarBoot();
+  world.sessionStorage.setItem('lfAdminPin', '4321');
+
+  world._confirmAnswer = false;
+  await world.lfAdminApagarGol({ id: 50, jogador_id: '22', nome: 'Felipe Teo.', minuto: '01:00' });
+  assert.deepEqual(api.estado.deletes, [], 'cancelou');
+
+  world._confirmAnswer = true;
+  await world.lfAdminApagarGol({ id: 50, jogador_id: '22', nome: 'Felipe Teo.', minuto: '01:00' });
+  assert.deepEqual(api.estado.deletes, [50]);
+  assert.equal(JSON.parse(storage.getItem('artilhariaPelada'))[22], undefined, 'artilharia do dia corrigida');
+  const b = JSON.parse(storage.getItem('backupPelada'));
+  assert.equal(b.golsFeedPartida.length, 0, 'saiu do feed da partida');
+  assert.equal(b.golsPartidaAtual, 0);
+  assert.deepEqual(b.golsJogadorPartida, {});
+  await world.lfSyncCarregarArtilharia();
+  assert.equal(JSON.parse(storage.getItem('artilhariaPelada'))[22], undefined, 'remoção do servidor não desconta de novo');
+});
+
+test('admin: PIN trocado no servidor encerra a sessão', async () => {
+  const api = apiAdminFake({ pin: 'novo' });
+  const { world } = carregarApp({ storageInitial: { lfSyncEndpoint: ADMIN_URL }, fetchImpl: api.fetchImpl });
+  await esperarBoot();
+  world.sessionStorage.setItem('lfAdminPin', 'velho');
+  await world.lfAdminApagarGol({ id: 1, jogador_id: '1', nome: 'R', minuto: null });
+  assert.equal(world.sessionStorage.getItem('lfAdminPin'), null);
+  assert.ok(world._alerts.some((a) => /PIN/.test(a)));
+});
+
+test('admin: sair encerra a sessão', () => {
+  const { world } = carregarApp();
+  world.sessionStorage.setItem('lfAdminPin', '4321');
+  world.lfAdminSair();
+  assert.equal(world.sessionStorage.getItem('lfAdminPin'), null);
 });

@@ -82,9 +82,14 @@ Snapshot completo pro boot/hidratação do app. **É o endpoint mais usado** (1 
   "jogadores": [ { "id": "1", "nome": "Râneer", "posicao": "linha", "foto": "https://...", "created_at": "..." } ],
   "gols": [],
   "artilharia": [ { "id": "4", "nome": "Eduardo Bol.", "gols": 33, "partidas": 9, "presencas": 11, "media_gols": 3.0, "foto": "..." } ],
-  "artilharia_hoje": [ /* mesmo shape, só gols da partida de hoje */ ]
+  "artilharia_hoje": [ /* mesmo shape, só gols da partida de hoje */ ],
+  "removidos_hoje": [ { "id": 481, "jogador_id": "49" } ]
 }
 ```
+
+`removidos_hoje` lista os gols apagados no dia (pela lixeira ou pelo admin). O app desconta
+cada um uma vez da contagem local, só enquanto ela estiver acima da do servidor. Sem isso, a
+reconciliação de outro celular reenviaria o gol apagado.
 
 Chave de gotcha: o acumulado geral é **`artilharia`**, não `artilharia_geral`. O de hoje é
 `artilharia_hoje`.
@@ -145,6 +150,10 @@ curl -X POST https://lf.felipeteodoro.dev/gols \
   costuma ficar com `status='ativa'` e engolia os gols do dia seguinte.
 - `time` só aceita `time1`/`time2`; qualquer outro vira `time1`.
 - `minuto` é texto livre (`'02:23'`, `'45'`, `null`).
+- **Bug corrigido em 2026-11-08:** a criação da partida do dia usava
+  `VALUES (?, "ativa")` com dois parâmetros. O SQLite do better-sqlite3 lê `"ativa"` como
+  coluna, então **todo gol de um dia sem partida ativa dava 500**. Foi isso que impediu os
+  gols de 07/11 de subirem.
 
 Resposta inclui o gol criado:
 
@@ -154,7 +163,35 @@ Resposta inclui o gol criado:
 
 ### `DELETE /gols/:id`
 
-Remove o gol. É o caminho correto — **não existe** `POST /gols/delete`.
+Remove o gol. É o caminho correto: **não existe** `POST /gols/delete`.
+
+- **Só gol de hoje.** Gol de outro dia responde 403, mesmo com PIN.
+- **Sem PIN:** só gol criado há até 15 min. É a lixeira do feed da partida, pra corrigir gol
+  marcado errado na hora.
+- **Com `X-Admin-Pin`:** qualquer gol de hoje.
+- **Idempotente:** gol que não existe mais responde `{ ok: true, jaRemovido: true }`.
+- Cada remoção entra em `gols_removidos`, que alimenta o `removidos_hoje` do `/estado`.
+
+### `GET /gols/dia?data=YYYY-MM-DD`
+
+Gols de um dia (default: hoje, no fuso do servidor), de todas as partidas, mais recente
+primeiro: `{ ok, data, gols: [{ id, partida_id, minuto, created_at, jogador_id, nome }] }`.
+É o que o painel de admin lista.
+
+### `POST /admin/sessao`
+
+Confere o PIN de admin (header `X-Admin-Pin`). Respostas:
+
+| Status | Quando |
+|---|---|
+| 200 | PIN certo |
+| 401 | PIN errado ou ausente |
+| 429 | 5 PINs errados do mesmo IP em 10 min |
+| 503 | sem PIN configurado no servidor |
+
+O PIN fica em `/srv/apps/lf-gerente-api/.admin-pin` (dono `apps`, modo 600) e **nunca vai pro
+repo**. Trocar o PIN = reescrever esse arquivo; não precisa de restart. No app, a entrada é
+escondida: toque no logo do cabeçalho.
 
 ### `POST /import`
 

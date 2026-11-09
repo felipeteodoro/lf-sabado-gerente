@@ -4,6 +4,12 @@
 // ReferenceError (TDZ) quando o timer dispara antes do fim do script.
 const LF_SYNC_ENDPOINT_KEY = 'lfSyncEndpoint';
 
+// Sessão de admin (apagar gols do dia). O PIN fica no sessionStorage: some
+// quando a aba/app fecha. Quem confere o PIN é a API, não o app.
+const LF_ADMIN_PIN_KEY = 'lfAdminPin';
+// Ids de gols apagados no servidor que este aparelho já descontou hoje
+const LF_SYNC_REMOCOES_KEY = 'lfSyncRemocoesAplicadas';
+
 // Controle de concorrência do sync (ver lfSyncFlush / lfSyncEnviarGolsPendentes).
 // Gols em envio: a reconciliação espera eles acabarem pra não duplicar.
 let lfSyncGolsEmVoo = 0;
@@ -110,7 +116,7 @@ function getAvatarUrl(nome) {
 // Cache-buster nas URLs de foto. Bumpa junto com o sw.js pra forçar
 // o navegador a re-baixar a foto (quebra qualquer cache HTTP do Chrome
 // que tenha prendado uma resposta 404 antiga).
-const FOTOS_VERSION = '55';
+const FOTOS_VERSION = '60';
 function fotoUrl(path) {
     if (!path) return path;
     return path + '?v=' + FOTOS_VERSION;
@@ -200,6 +206,7 @@ function verificarLimpezaMeiaNoite() {
     if (dataSalva !== dataHoje) {
         localStorage.removeItem('artilhariaPelada');
         localStorage.removeItem('backupPelada'); 
+        localStorage.removeItem(LF_SYNC_REMOCOES_KEY);
         localStorage.setItem('dataPelada', dataHoje);
     }
 }
@@ -1279,6 +1286,7 @@ async function lfSyncCarregarArtilharia() {
         const resp = await fetch(url + '/estado');
         const dados = await resp.json();
         if (!dados.ok) return;
+        lfSyncAplicarRemocoes(dados);
         const local = JSON.parse(localStorage.getItem('artilhariaPelada')) || {};
         // Hidrata com a artilharia DO DIA (artilharia_hoje), não a global —
         // a vista "Geral" já é servida à parte em lfSyncArtilhariaGeral().
@@ -1321,11 +1329,17 @@ async function lfSyncEnviarGolsPendentesExecutar() {
     let enviados = 0;
     // Foto do local ANTES de ler o servidor: um gol marcado durante o fetch
     // fica fora da foto e nunca é contado em dobro (no máximo sobe na próxima).
-    const local = JSON.parse(localStorage.getItem('artilhariaPelada')) || {};
+    let local = JSON.parse(localStorage.getItem('artilhariaPelada')) || {};
     try {
         const resp = await fetch(url + '/estado');
         const dados = await resp.json();
         if (!dados || !dados.ok) return { ok: false, enviados: 0 };
+
+        // Gol apagado (admin ou lixeira de outro celular) ainda pode estar na
+        // contagem deste aparelho: desconta antes, senão ele seria reenviado.
+        lfSyncAplicarRemocoes(dados);
+        if (lfSyncGolsEmVoo > 0) return { ok: false, enviados: 0, reason: 'gol-em-voo' };
+        local = JSON.parse(localStorage.getItem('artilhariaPelada')) || {};
 
         const noServidor = {};
         for (const a of (dados.artilharia_hoje || [])) noServidor[String(a.id)] = a.gols || 0;
@@ -1558,6 +1572,183 @@ async function lfSyncArtilhariaGeral() {
     } catch (err) {
         return null;
     }
+}
+
+// ============================================================
+// REMOÇÕES DO SERVIDOR (gols apagados pelo admin ou pela lixeira)
+// ============================================================
+
+// Pura. Cada gol apagado no servidor desconta 1 do jogador no local, uma vez
+// só (`aplicados`), e só enquanto o local está ACIMA do servidor: aparelho que
+// nunca teve aquele gol (ou já hidratou depois da remoção) não perde nada.
+function aplicarRemocoesDoServidor(local, artilhariaHoje, removidos, aplicados) {
+    const resultado = { ...local };
+    const feitos = new Set(aplicados);
+    const noServidor = {};
+    for (const a of (artilhariaHoje || [])) noServidor[String(a.id)] = a.gols;
+    for (const r of (removidos || [])) {
+        if (feitos.has(r.id)) continue;
+        feitos.add(r.id);
+        const item = resultado[r.jogador_id];
+        if (!item || !(item.gols > (noServidor[String(r.jogador_id)] || 0))) continue;
+        if (item.gols <= 1) delete resultado[r.jogador_id];
+        else resultado[r.jogador_id] = { ...item, gols: item.gols - 1 };
+    }
+    return { local: resultado, aplicados: [...feitos] };
+}
+
+function lfSyncAplicarRemocoes(dados) {
+    const r = aplicarRemocoesDoServidor(
+        JSON.parse(localStorage.getItem('artilhariaPelada')) || {},
+        dados.artilharia_hoje,
+        dados.removidos_hoje,
+        JSON.parse(localStorage.getItem(LF_SYNC_REMOCOES_KEY) || '[]'),
+    );
+    localStorage.setItem('artilhariaPelada', JSON.stringify(r.local));
+    localStorage.setItem(LF_SYNC_REMOCOES_KEY, JSON.stringify(r.aplicados));
+}
+
+// ============================================================
+// ADMIN: apagar gols do dia. Entrada escondida: toque no logo do cabeçalho.
+// A API exige o PIN (X-Admin-Pin) e só deixa apagar gol de HOJE.
+// ============================================================
+
+async function lfAdminAbrir() {
+    if (!lfSyncAtivo()) {
+        alert('O admin precisa do Sync ligado (botão Sync na aba Estatísticas).');
+        return;
+    }
+    if (!sessionStorage.getItem(LF_ADMIN_PIN_KEY)) {
+        const pin = prompt('PIN de admin:');
+        if (!pin || !pin.trim()) return;
+        if (!await lfAdminEntrar(pin.trim())) return;
+    }
+    document.getElementById('modal-admin-gols')?.classList.remove('hidden');
+    document.getElementById('modal-admin-gols')?.classList.add('flex');
+    await lfAdminCarregarGols();
+}
+
+async function lfAdminEntrar(pin) {
+    let resp;
+    try {
+        resp = await fetch(localStorage.getItem(LF_SYNC_ENDPOINT_KEY) + '/admin/sessao', {
+            method: 'POST',
+            headers: { 'X-Admin-Pin': pin },
+        });
+    } catch (err) {
+        alert('Sem conexão com o servidor. Tente de novo.');
+        return false;
+    }
+    if (resp.ok) {
+        sessionStorage.setItem(LF_ADMIN_PIN_KEY, pin);
+        return true;
+    }
+    const avisos = {
+        401: 'PIN inválido.',
+        429: 'Muitas tentativas erradas. Espere 10 minutos.',
+        503: 'O admin não está configurado no servidor.',
+    };
+    alert(avisos[resp.status] || 'O servidor recusou (HTTP ' + resp.status + ').');
+    return false;
+}
+
+function lfAdminSair() {
+    sessionStorage.removeItem(LF_ADMIN_PIN_KEY);
+    document.getElementById('modal-admin-gols')?.classList.add('hidden');
+    document.getElementById('modal-admin-gols')?.classList.remove('flex');
+}
+
+async function lfAdminCarregarGols() {
+    const lista = document.getElementById('admin-lista-gols');
+    if (!lista) return;
+    lista.innerHTML = '';
+    let gols;
+    try {
+        const resp = await fetch(localStorage.getItem(LF_SYNC_ENDPOINT_KEY) + '/gols/dia');
+        gols = (await resp.json()).gols || [];
+    } catch (err) {
+        lista.textContent = 'Sem conexão com o servidor.';
+        return;
+    }
+    if (gols.length === 0) {
+        lista.textContent = 'Nenhum gol hoje no servidor.';
+        return;
+    }
+    for (const gol of gols) lista.appendChild(lfAdminLinhaGol(gol));
+}
+
+// Linha do gol montada com textContent: nome vem do servidor, nunca vira HTML
+function lfAdminLinhaGol(gol) {
+    const linha = document.createElement('div');
+    linha.className = 'flex items-center gap-3 bg-black/40 border border-white/5 rounded p-2.5';
+    const minuto = document.createElement('span');
+    minuto.className = 'led-text text-brand text-lg tabular-nums shrink-0 w-14';
+    minuto.textContent = gol.minuto ? gol.minuto + "'" : '--';
+    const nome = document.createElement('span');
+    nome.className = 'font-bold text-white truncate flex-grow';
+    nome.textContent = gol.nome;
+    const apagar = document.createElement('button');
+    apagar.type = 'button';
+    apagar.className = 'text-zinc-500 hover:text-red-400 transition-colors shrink-0 px-2';
+    apagar.title = 'Apagar gol';
+    apagar.innerHTML = '<i class="fa-solid fa-trash-can text-base"></i>';
+    apagar.onclick = () => lfAdminApagarGol(gol);
+    linha.appendChild(minuto);
+    linha.appendChild(nome);
+    linha.appendChild(apagar);
+    return linha;
+}
+
+async function lfAdminApagarGol(gol) {
+    const quando = gol.minuto ? ` aos ${gol.minuto}` : '';
+    if (!confirm(`Apagar o gol de ${gol.nome}${quando}?\n\nIsso apaga no servidor e não dá pra desfazer.`)) return;
+    let resp;
+    try {
+        resp = await fetch(localStorage.getItem(LF_SYNC_ENDPOINT_KEY) + '/gols/' + gol.id, {
+            method: 'DELETE',
+            headers: { 'X-Admin-Pin': sessionStorage.getItem(LF_ADMIN_PIN_KEY) || '' },
+        });
+    } catch (err) {
+        alert('Sem conexão com o servidor. O gol não foi apagado.');
+        return;
+    }
+    if (resp.status === 401) {
+        lfAdminSair();
+        alert('O PIN não vale mais. Toque no logo e entre de novo.');
+        return;
+    }
+    if (!resp.ok) {
+        const corpo = await resp.json().catch(() => ({}));
+        alert(corpo.error || 'O servidor recusou (HTTP ' + resp.status + ').');
+        return;
+    }
+    removerGolLocal(gol.jogador_id, gol.id);
+    const aplicados = JSON.parse(localStorage.getItem(LF_SYNC_REMOCOES_KEY) || '[]');
+    localStorage.setItem(LF_SYNC_REMOCOES_KEY, JSON.stringify([...aplicados, gol.id]));
+    lfSyncInvalidarCacheGeral();
+    await lfAdminCarregarGols();
+}
+
+// Tira o gol deste aparelho: artilharia do dia e, se for da partida atual,
+// o feed e os contadores (libera a cota de 2 gols do atleta).
+function removerGolLocal(jogadorId, dbId) {
+    const artilharia = JSON.parse(localStorage.getItem('artilhariaPelada')) || {};
+    const item = artilharia[jogadorId];
+    if (item && item.gols > 1) item.gols--;
+    else delete artilharia[jogadorId];
+    localStorage.setItem('artilhariaPelada', JSON.stringify(artilharia));
+
+    const idx = golsFeedPartida.findIndex(g => g.dbId === dbId);
+    if (idx !== -1) {
+        golsFeedPartida.splice(idx, 1);
+        golsPartidaAtual = Math.max(0, golsPartidaAtual - 1);
+        const n = (golsJogadorPartida[jogadorId] || 0) - 1;
+        if (n > 0) golsJogadorPartida[jogadorId] = n;
+        else delete golsJogadorPartida[jogadorId];
+    }
+    salvarBackup();
+    renderGolsPartida();
+    renderArtilharia();
 }
 
 // Invalida o cache quando um gol novo pode ter mudado o geral

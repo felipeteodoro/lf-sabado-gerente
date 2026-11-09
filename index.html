@@ -53,7 +53,7 @@
     <header class="glass-panel rounded-none border-t-0 border-l-0 border-r-0 border-b border-white/5 sticky top-0 z-10">
         <div class="max-w-3xl mx-auto px-4 py-3 flex justify-between items-center">
             <div class="flex items-center gap-3">
-                <img src="fotos/logo.png" alt="Logo do Grupo" class="w-10 h-10 object-contain rounded-full border border-white/10 shadow-md">
+                <img src="fotos/logo.png" alt="Logo do Grupo" onclick="lfAdminAbrir()" class="w-10 h-10 object-contain rounded-full border border-white/10 shadow-md">
                 <h1 class="text-2xl font-teko text-white tracking-widest uppercase mt-1">LF Sábado</h1>
             </div>
             <div class="text-xs font-bold text-zinc-300 bg-black/40 px-3 py-1.5 rounded border border-white/5 uppercase tracking-widest shadow-inner">
@@ -223,6 +223,21 @@
         </div>
     </div>
 
+    <!-- ADMIN: apagar gols do dia (entrada escondida: toque no logo do cabeçalho) -->
+    <div id="modal-admin-gols" class="fixed inset-0 bg-black/80 backdrop-blur-md z-50 hidden flex-col items-center justify-end sm:justify-center p-4">
+        <div class="glass-panel w-full max-w-md overflow-hidden transform transition-all flex flex-col max-h-[85vh]">
+            <div class="p-4 border-b border-white/10 flex justify-between items-center shrink-0 bg-black/40">
+                <h3 class="font-teko text-2xl uppercase tracking-widest text-brand mt-1 drop-shadow-md">Admin · Gols de hoje</h3>
+                <button onclick="document.getElementById('modal-admin-gols').classList.add('hidden'); document.getElementById('modal-admin-gols').classList.remove('flex')" class="text-zinc-500 hover:text-white text-2xl leading-none" aria-label="Fechar">&times;</button>
+            </div>
+            <div id="admin-lista-gols" class="p-4 space-y-2 overflow-y-auto text-zinc-400 font-bold"></div>
+            <div class="p-4 border-t border-white/10 flex gap-3 shrink-0">
+                <button type="button" onclick="lfAdminSair()" class="flex-1 py-3 rounded-lg bg-white/5 hover:bg-white/10 text-red-400 font-bold uppercase tracking-wider transition-colors">Sair do admin</button>
+                <button type="button" onclick="lfAdminCarregarGols()" class="flex-1 py-3 rounded-lg btn-primary font-bold uppercase tracking-wider transition-colors">Atualizar</button>
+            </div>
+        </div>
+    </div>
+
     <!-- NAVEGAÇÃO INFERIOR -->
     <nav class="glass-panel rounded-none border-b-0 border-l-0 border-r-0 border-t border-white/10 fixed bottom-0 w-full z-40">
         <div class="max-w-3xl mx-auto flex justify-around">
@@ -241,7 +256,7 @@
         </div>
     </nav>
 
-    <script src="app.js?v=55"></script>
+    <script src="app.js?v=60"></script>
     <script>
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => {
