@@ -103,6 +103,28 @@ document.addEventListener('visibilitychange', () => {
     }
 });
 
+// Mostrar/esconder por id (elemento ausente = nada a fazer). Um lugar só
+// pro padrão que se repetia em todo handler.
+function mostrar(id) {
+    document.getElementById(id)?.classList.remove('hidden');
+}
+
+function esconder(id) {
+    document.getElementById(id)?.classList.add('hidden');
+}
+
+function abrirModal(id) {
+    const el = document.getElementById(id);
+    el?.classList.remove('hidden');
+    el?.classList.add('flex');
+}
+
+function fecharModal(id) {
+    const el = document.getElementById(id);
+    el?.classList.add('hidden');
+    el?.classList.remove('flex');
+}
+
 function getAvatarUrl(nome) {
     return `https://ui-avatars.com/api/?name=${encodeURIComponent(nome)}&background=141416&color=8ba360&bold=true`;
 }
@@ -132,34 +154,7 @@ function init() {
     verificarLimpezaMeiaNoite();
 
     const backup = localStorage.getItem('backupPelada');
-    if (backup) {
-        const dados = JSON.parse(backup);
-        jogadoresData = dados.jogadoresData || jogadoresData;
-        timesSorteadosGlobal = dados.timesSorteadosGlobal || [];
-        tempoRestante = dados.tempoRestante !== undefined ? dados.tempoRestante : TEMPO_TOTAL;
-        golsPartidaAtual = dados.golsPartidaAtual || 0;
-        golsJogadorPartida = dados.golsJogadorPartida || {};
-        golsFeedPartida = dados.golsFeedPartida || [];
-        renderGolsPartida();
-
-        if (timesSorteadosGlobal.length > 0) {
-            document.getElementById('btn-sortear')?.classList.add('hidden');
-            document.getElementById('lista-jogadores-section')?.classList.add('hidden');
-            document.getElementById('resultado-section')?.classList.remove('hidden');
-            renderTimes(timesSorteadosGlobal);
-        }
-
-        cronometroRodando = false; 
-        const btnCronometro = document.getElementById('btn-cronometro');
-        if (btnCronometro) {
-            btnCronometro.innerHTML = '<i class="fa-solid fa-play mr-2 text-2xl opacity-80"></i> Retomar';
-            btnCronometro.className = 'w-full max-w-[320px] bg-amber-600/80 backdrop-blur-sm text-white border border-amber-500/50 py-3.5 rounded-lg font-teko text-3xl uppercase tracking-wider active:scale-95 transition-all flex justify-center items-center shadow-lg';
-            if(tempoRestante === TEMPO_TOTAL) {
-                btnCronometro.innerHTML = '<i class="fa-solid fa-play mr-3 text-2xl opacity-80"></i> Iniciar';
-                btnCronometro.className = 'w-full max-w-[320px] btn-primary py-3.5 rounded-lg font-teko text-3xl uppercase tracking-wider active:scale-95 transition-all flex justify-center items-center shadow-lg';
-            }
-        }
-    }
+    if (backup) restaurarBackup(JSON.parse(backup));
 
     const totalJogadores = document.getElementById('total-jogadores');
     if(totalJogadores) totalJogadores.innerText = jogadoresData.length;
@@ -174,23 +169,62 @@ function init() {
     // Chamado via setTimeout(0) porque LF_SYNC_ENDPOINT_KEY (const) ainda
     // nao foi inicializada neste ponto do codigo (TDZ). setTimeout empilha
     // a chamada pra depois do script acabar de rodar.
-    setTimeout(() => {
-        if (!lfSyncAtivo()) {
-            console.info('[hidratar] sync desativado (sem endpoint) - Michel/Lucas vao usar valores hardcoded');
-            return;
+    setTimeout(hidratarJogadoresNoBoot, 0);
+}
+
+// Estado salvo do dia (reload / app fechado no meio da pelada)
+function restaurarBackup(dados) {
+    jogadoresData = dados.jogadoresData || jogadoresData;
+    timesSorteadosGlobal = dados.timesSorteadosGlobal || [];
+    tempoRestante = dados.tempoRestante !== undefined ? dados.tempoRestante : TEMPO_TOTAL;
+    golsPartidaAtual = dados.golsPartidaAtual || 0;
+    golsJogadorPartida = dados.golsJogadorPartida || {};
+    golsFeedPartida = dados.golsFeedPartida || [];
+    renderGolsPartida();
+
+    if (timesSorteadosGlobal.length > 0) {
+        esconder('btn-sortear');
+        esconder('lista-jogadores-section');
+        mostrar('resultado-section');
+        renderTimes(timesSorteadosGlobal);
+    }
+
+    // Reabrir o app nunca deixa o cronômetro rodando sozinho
+    cronometroRodando = false;
+    atualizarBotaoCronometroParado();
+}
+
+function atualizarBotaoCronometroParado() {
+    const btn = document.getElementById('btn-cronometro');
+    if (!btn) return;
+    if (tempoRestante === TEMPO_TOTAL) {
+        btn.innerHTML = '<i class="fa-solid fa-play mr-3 text-2xl opacity-80"></i> Iniciar';
+        btn.className = 'w-full max-w-[320px] btn-primary py-3.5 rounded-lg font-teko text-3xl uppercase tracking-wider active:scale-95 transition-all flex justify-center items-center shadow-lg';
+    } else {
+        btn.innerHTML = '<i class="fa-solid fa-play mr-2 text-2xl opacity-80"></i> Retomar';
+        btn.className = 'w-full max-w-[320px] bg-amber-600/80 backdrop-blur-sm text-white border border-amber-500/50 py-3.5 rounded-lg font-teko text-3xl uppercase tracking-wider active:scale-95 transition-all flex justify-center items-center shadow-lg';
+    }
+}
+
+// R-2026-10-20: hidrata jogadores do servidor (posicao, foto) sem sobrescrever
+// a presenca. Roda via setTimeout(0) no init: LF_SYNC_ENDPOINT_KEY e o
+// estado do sync precisam estar inicializados (TDZ).
+function hidratarJogadoresNoBoot() {
+    if (!lfSyncAtivo()) {
+        console.info('[hidratar] sync desativado (sem endpoint) - Michel/Lucas vao usar valores hardcoded');
+        return;
+    }
+    console.info('[hidratar] iniciando hidratacao...');
+    lfSyncHidratarJogadores().then((atualizou) => {
+        console.info('[hidratar] ok, atualizou=' + !!atualizou);
+        if (atualizou) {
+            renderLista();
+            renderArtilharia();
+            salvarBackup();
         }
-        console.info('[hidratar] iniciando hidratacao...');
-        lfSyncHidratarJogadores().then((atualizou) => {
-            console.info('[hidratar] ok, atualizou=' + !!atualizou);
-            if (atualizou) {
-                renderLista();
-                renderArtilharia();
-                salvarBackup();
-            }
-        }).catch(err => {
-            console.warn('[hidratar] falhou:', err && err.message ? err.message : err);
-        });
-    }, 0);
+    }).catch(err => {
+        console.warn('[hidratar] falhou:', err && err.message ? err.message : err);
+    });
 }
 
 function verificarLimpezaMeiaNoite() {
@@ -205,18 +239,17 @@ function verificarLimpezaMeiaNoite() {
 }
 
 function mudarAba(aba) {
-    document.getElementById('tab-sorteio')?.classList.add('hidden');
-    document.getElementById('tab-partida')?.classList.add('hidden');
-    document.getElementById('tab-artilharia')?.classList.add('hidden');
+    esconder('tab-sorteio');
+    esconder('tab-partida');
+    esconder('tab-artilharia');
     
     document.querySelectorAll('nav button').forEach(btn => {
         btn.classList.remove('text-brand');
         btn.classList.add('text-zinc-500');
     });
 
-    document.getElementById(`tab-${aba}`)?.classList.remove('hidden');
-    document.getElementById(`nav-${aba}`)?.classList.remove('text-zinc-500');
-    document.getElementById(`nav-${aba}`)?.classList.add('text-brand');
+    mostrar(`tab-${aba}`);
+    document.getElementById(`nav-${aba}`)?.classList.replace('text-zinc-500', 'text-brand');
 
     if (aba === 'artilharia') renderArtilharia();
 }
@@ -351,32 +384,31 @@ function atualizarContador() {
     if(contador) contador.innerText = presentes;
 }
 
+// Pura: nome digitado (sem espaços nas pontas) ou "Player N" se vazio.
+// Nunca devolve vazio, então não precisa de checagem depois.
+function nomeConvidado(entrada, jogadores) {
+    const nome = entrada.trim();
+    if (nome) return nome;
+    return `Player ${jogadores.filter(j => j.nome.startsWith('Player')).length + 1}`;
+}
+
+// Pura: maior id numérico + 1 (R-2026-10-20: o backend exige id numérico;
+// slugs legados ficam de fora do max).
+function proximoIdJogador(jogadores) {
+    const ids = jogadores.map(j => Number(j.id)).filter(Number.isFinite);
+    return Math.max(0, ...ids) + 1;
+}
+
 function adicionarPlayer() {
     let nomeInput = prompt("Digite o nome do jogador convidado:\n(Ou deixe em branco para ser automático)");
     if (nomeInput === null) return;
 
-    let nomeFinal = nomeInput.trim();
-    if (nomeFinal === "") {
-        const qtdPlayers = jogadoresData.filter(j => j.nome.startsWith('Player')).length;
-        nomeFinal = `Player ${qtdPlayers + 1}`;
-    }
-
-    // R-2026-10-20: rejeita nomes vazios ou só espaços (defesa em profundidade)
-    if (!nomeFinal || !nomeFinal.trim()) {
-        alert('Nome inválido. Tente novamente.');
-        return;
-    }
+    const nomeFinal = nomeConvidado(nomeInput, jogadoresData);
 
     const ehLinha = confirm(`O ${nomeFinal} é Jogador de Linha ou Goleiro?\n\n✅ Clique em [OK] se for LINHA.\n❌ Clique em [Cancelar] se for GOLEIRO.`);
     const posicaoFinal = ehLinha ? "linha" : "goleiro";
 
-    // R-2026-10-20: garantir que o ID é numérico (defesa em profundidade pra
-    // bater com a validacao do backend, mesmo se o max() der algum NaN)
-    const maxId = jogadoresData.reduce((acc, j) => {
-        const n = Number(j.id);
-        return Number.isFinite(n) && n > acc ? n : acc;
-    }, 0);
-    const novoId = maxId + 1;
+    const novoId = proximoIdJogador(jogadoresData);
 
     const novoJogador = {
         id: novoId,
@@ -466,15 +498,15 @@ function iniciarSorteio() {
         return;
     }
 
-    document.getElementById('btn-sortear')?.classList.add('hidden');
-    document.getElementById('lista-jogadores-section')?.classList.add('hidden');
-    document.getElementById('resultado-section')?.classList.add('hidden');
-    document.getElementById('loading-sorteio')?.classList.remove('hidden');
+    esconder('btn-sortear');
+    esconder('lista-jogadores-section');
+    esconder('resultado-section');
+    mostrar('loading-sorteio');
 
     setTimeout(() => {
-        document.getElementById('loading-sorteio')?.classList.add('hidden');
-        document.getElementById('resultado-section')?.classList.remove('hidden');
-        document.getElementById('lista-jogadores-section')?.classList.remove('hidden');
+        esconder('loading-sorteio');
+        mostrar('resultado-section');
+        mostrar('lista-jogadores-section');
         
         sortearImparcial(presentes);
     }, 2500);
@@ -575,9 +607,9 @@ function renderTimes(times) {
 function desfazerSorteio() {
     if(confirm("Tem certeza que deseja apagar os times formados e voltar ao sorteio?")) {
         timesSorteadosGlobal = [];
-        document.getElementById('resultado-section')?.classList.add('hidden');
-        document.getElementById('btn-sortear')?.classList.remove('hidden');
-        document.getElementById('lista-jogadores-section')?.classList.remove('hidden');
+        esconder('resultado-section');
+        mostrar('btn-sortear');
+        mostrar('lista-jogadores-section');
         salvarBackup();
     }
 }
@@ -629,50 +661,38 @@ function abrirModalSubSorteio(timeIndex, jogadorSaindoId = null) {
         });
     }
 
-    document.getElementById('modal-sub-sorteio')?.classList.remove('hidden');
-    document.getElementById('modal-sub-sorteio')?.classList.add('flex');
+    abrirModal('modal-sub-sorteio');
 }
 
 function efetivarSubSorteio(jogadorEntrandoId) {
-    const timeAlvo = timesSorteadosGlobal[modalSorteioTimeIndex];
     const jogadorEntrando = jogadoresData.find(j => j.id === jogadorEntrandoId);
-
-    let timeDoEntrando = null;
-    let indexNoTimeDoEntrando = -1;
-
-    timesSorteadosGlobal.forEach(t => {
-        const idx = t.jogadores.findIndex(j => j.id === jogadorEntrandoId);
-        if (idx !== -1) {
-            timeDoEntrando = t;
-            indexNoTimeDoEntrando = idx;
-        }
-    });
-
-    if (modalSorteioJogadorSaindoId !== null) {
-        const indexSaindo = timeAlvo.jogadores.findIndex(j => j.id === modalSorteioJogadorSaindoId);
-        const jogadorSaindo = timeAlvo.jogadores[indexSaindo];
-
-        timeAlvo.jogadores[indexSaindo] = jogadorEntrando;
-
-        if (timeDoEntrando !== null) {
-            timeDoEntrando.jogadores[indexNoTimeDoEntrando] = jogadorSaindo;
-        }
-    } else {
-        timeAlvo.jogadores.push(jogadorEntrando);
-        if (timeDoEntrando !== null) {
-            timeDoEntrando.jogadores.splice(indexNoTimeDoEntrando, 1);
-        }
-    }
-
+    trocarJogadorEntreTimes(timesSorteadosGlobal, modalSorteioTimeIndex, modalSorteioJogadorSaindoId, jogadorEntrando);
     fecharModalSubSorteio();
     renomearTimesSequencialmente();
     renderTimes(timesSorteadosGlobal);
     salvarBackup();
 }
 
+// Coloca `entrando` no time `timeIndex`. Com `saindoId`, troca: quem sai vai
+// pro lugar de onde o outro veio (ou só sai, se ele veio de fora). Sem
+// `saindoId`, ocupa uma vaga e deixa o time de origem.
+function trocarJogadorEntreTimes(times, timeIndex, saindoId, entrando) {
+    const alvo = times[timeIndex];
+    const origem = times.find(t => t.jogadores.some(j => j.id === entrando.id));
+    const idxOrigem = origem ? origem.jogadores.findIndex(j => j.id === entrando.id) : -1;
+    if (saindoId !== null) {
+        const idxSaindo = alvo.jogadores.findIndex(j => j.id === saindoId);
+        const saindo = alvo.jogadores[idxSaindo];
+        alvo.jogadores[idxSaindo] = entrando;
+        if (origem) origem.jogadores[idxOrigem] = saindo;
+    } else {
+        alvo.jogadores.push(entrando);
+        if (origem) origem.jogadores.splice(idxOrigem, 1);
+    }
+}
+
 function fecharModalSubSorteio() {
-    document.getElementById('modal-sub-sorteio')?.classList.add('hidden');
-    document.getElementById('modal-sub-sorteio')?.classList.remove('flex');
+    fecharModal('modal-sub-sorteio');
 }
 
 function atualizarDisplayCronometro() {
@@ -805,45 +825,55 @@ function renderGolsPartida() {
 // Remove um gol da partida atual (UI + servidor + contadores)
 // Tem confirmação, é otimista (some da UI na hora), e restaura se o servidor falhar.
 async function removerGol(index) {
-    if (index < 0 || index >= golsFeedPartida.length) return;
     const gol = golsFeedPartida[index];
+    if (!gol) return;
     if (!confirm(`Remover o gol de ${gol.nome} aos ${gol.minuto}?`)) return;
 
-    // Snapshot pra restaurar se der erro
-    const snapshot = JSON.parse(JSON.stringify(golsFeedPartida));
-    const snapshotGolsPartida = golsPartidaAtual;
-    const snapshotGolsJogador = JSON.parse(JSON.stringify(golsJogadorPartida));
-    const snapshotArtilharia = localStorage.getItem('artilhariaPelada');
-
-    // Remoção otimista
+    // Otimista: tira local já; se o servidor recusar, volta tudo como estava
+    const antes = fotografarPartida();
     golsFeedPartida.splice(index, 1);
     golsPartidaAtual = Math.max(0, golsPartidaAtual - 1);
-    if (golsJogadorPartida[gol.id]) {
-        golsJogadorPartida[gol.id] = Math.max(0, golsJogadorPartida[gol.id] - 1);
-        if (golsJogadorPartida[gol.id] === 0) delete golsJogadorPartida[gol.id];
-    }
-    let artilharia = JSON.parse(localStorage.getItem('artilhariaPelada')) || {};
-    if (artilharia[gol.id] && artilharia[gol.id].gols > 0) {
-        artilharia[gol.id].gols--;
-        if (artilharia[gol.id].gols === 0) delete artilharia[gol.id];
-    }
-    localStorage.setItem('artilhariaPelada', JSON.stringify(artilharia));
+    golsJogadorPartida = descontarGol(golsJogadorPartida, gol.id, (n) => n, (n) => n - 1);
+    const artilharia = JSON.parse(localStorage.getItem('artilhariaPelada')) || {};
+    localStorage.setItem('artilhariaPelada', JSON.stringify(
+        descontarGol(artilharia, gol.id, (a) => a.gols, (a) => ({ ...a, gols: a.gols - 1 }))
+    ));
     renderGolsPartida();
     salvarBackup();
     lfSyncInvalidarCacheGeral();
 
-    // Tenta deletar no servidor
-    const ok = await lfSyncRemoverGol(gol.dbId);
-    if (!ok && gol.dbId !== null) {
-        // Servidor falhou -> restaura
+    if (!await lfSyncRemoverGol(gol.dbId)) {
         alert('Não foi possível remover o gol no servidor. Restaurando.');
-        golsFeedPartida = snapshot;
-        golsPartidaAtual = snapshotGolsPartida;
-        golsJogadorPartida = snapshotGolsJogador;
-        localStorage.setItem('artilhariaPelada', snapshotArtilharia);
-        renderGolsPartida();
-        salvarBackup();
+        restaurarFotoDaPartida(antes);
     }
+}
+
+// Pura: devolve uma cópia com um gol a menos para `id`; quem chega a 0 sai.
+// `gols(v)` lê a contagem do valor e `menos(v)` devolve o valor com -1.
+function descontarGol(mapa, id, gols, menos) {
+    const copia = { ...mapa };
+    if (!(gols(copia[id] ?? 0) > 0)) return copia;
+    copia[id] = menos(copia[id]);
+    if (gols(copia[id]) === 0) delete copia[id];
+    return copia;
+}
+
+function fotografarPartida() {
+    return {
+        feed: JSON.parse(JSON.stringify(golsFeedPartida)),
+        golsPartida: golsPartidaAtual,
+        golsJogador: { ...golsJogadorPartida },
+        artilharia: localStorage.getItem('artilhariaPelada'),
+    };
+}
+
+function restaurarFotoDaPartida(foto) {
+    golsFeedPartida = foto.feed;
+    golsPartidaAtual = foto.golsPartida;
+    golsJogadorPartida = foto.golsJogador;
+    localStorage.setItem('artilhariaPelada', foto.artilharia);
+    renderGolsPartida();
+    salvarBackup();
 }
 
 function abrirModalGol() {
@@ -863,8 +893,7 @@ function abrirModalGol() {
     renderListaJogadoresModal(todosJogadores);
 
     document.getElementById('busca-jogador-gol').value = '';
-    document.getElementById('modal-gol')?.classList.remove('hidden');
-    document.getElementById('modal-gol')?.classList.add('flex');
+    abrirModal('modal-gol');
     
     setTimeout(() => document.getElementById('busca-jogador-gol')?.focus(), 100);
 }
@@ -909,8 +938,7 @@ function filtrarJogadoresGol() {
 }
 
 function fecharModalGol() {
-    document.getElementById('modal-gol')?.classList.add('hidden');
-    document.getElementById('modal-gol')?.classList.remove('flex');
+    fecharModal('modal-gol');
 }
 
 // Vista atual da tab Artilharia ('hoje' = localStorage | 'geral' = servidor)
@@ -1057,49 +1085,40 @@ function zerarArtilharia() {
 
 function copiarParaWhatsApp() {
     if (timesSorteadosGlobal.length === 0) return;
-    let texto = "⚽ *SORTEIO DOS TIMES* ⚽\n\n";
-    timesSorteadosGlobal.forEach(time => {
-        texto += `*${time.nome.toUpperCase()}*\n`;
-        time.jogadores.forEach(j => {
-            const pos = j.posicao === 'goleiro' ? '🧤' : '🏃';
-            texto += `${pos} ${j.nome}\n`;
-        });
-        texto += "\n";
-    });
-    navigator.clipboard.writeText(texto.trim()).then(() => {
-        alert("Escalação copiada! Agora é só colar no grupo do WhatsApp.");
-    }).catch(err => {
-        console.error("Erro ao copiar: ", err);
-        alert("Não foi possível copiar automaticamente.");
-    });
+    copiarTexto(textoEscalacao(timesSorteadosGlobal), "Escalação copiada! Agora é só colar no grupo do WhatsApp.");
+}
+
+// Pura: escalação pro WhatsApp, luva pro goleiro.
+function textoEscalacao(times) {
+    const blocos = times.map(time => [
+        `*${time.nome.toUpperCase()}*`,
+        ...time.jogadores.map(j => `${j.posicao === 'goleiro' ? '🧤' : '🏃'} ${j.nome}`),
+    ].join('\n'));
+    return "⚽ *SORTEIO DOS TIMES* ⚽\n\n" + blocos.join('\n\n');
 }
 
 function copiarArtilharia() {
-    let artilharia = JSON.parse(localStorage.getItem('artilhariaPelada'));
-    if (!artilharia || Object.keys(artilharia).length === 0) {
+    const texto = textoArtilharia(JSON.parse(localStorage.getItem('artilhariaPelada')));
+    if (!texto) {
         alert("Nenhum gol registrado para copiar.");
         return;
     }
-    
-    let arrayArtilheiros = Object.values(artilharia).sort((a, b) => b.gols - a.gols);
-    let posicoes = [...new Set(arrayArtilheiros.map(j => j.gols))];
+    copiarTexto(texto, "Artilharia copiada! Agora é só colar no grupo do WhatsApp.");
+}
 
-    let texto = "🏆 *RANKING DO SÁBADO* 🏆\n\n";
-    
-    arrayArtilheiros.forEach((jogador) => {
-        let colocacao = posicoes.indexOf(jogador.gols) + 1;
-        let medalhaEmoji = '';
-        
-        if (colocacao === 1) medalhaEmoji = '🥇';
-        else if (colocacao === 2) medalhaEmoji = '🥈';
-        else if (colocacao === 3) medalhaEmoji = '🥉';
-        else medalhaEmoji = '⚽';
+// Pura: ranking do dia pro WhatsApp. Empate divide a colocação (e a medalha).
+function textoArtilharia(artilharia) {
+    const artilheiros = Object.values(artilharia || {}).sort((a, b) => b.gols - a.gols);
+    if (artilheiros.length === 0) return null;
+    const posicoes = [...new Set(artilheiros.map(j => j.gols))];
+    const medalhas = ['🥇', '🥈', '🥉'];
+    const linhas = artilheiros.map(j => `${medalhas[posicoes.indexOf(j.gols)] || '⚽'} ${j.nome} - ${j.gols} gol(s)`);
+    return "🏆 *RANKING DO SÁBADO* 🏆\n\n" + linhas.join('\n');
+}
 
-        texto += `${medalhaEmoji} ${jogador.nome} - ${jogador.gols} gol(s)\n`;
-    });
-
-    navigator.clipboard.writeText(texto.trim()).then(() => {
-        alert("Artilharia copiada! Agora é só colar no grupo do WhatsApp.");
+function copiarTexto(texto, mensagemOk) {
+    navigator.clipboard.writeText(texto).then(() => {
+        alert(mensagemOk);
     }).catch(err => {
         console.error("Erro ao copiar: ", err);
         alert("Não foi possível copiar automaticamente.");

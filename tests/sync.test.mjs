@@ -17,7 +17,8 @@ import vm from 'node:vm';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const APP_JS = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'app.js'), 'utf8');
+const APP_JS_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'app.js');
+const APP_JS = readFileSync(APP_JS_PATH, 'utf8');
 
 // --- Mocks mínimos ----------------------------------------------------
 
@@ -25,7 +26,7 @@ const APP_JS = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url
 // elemento absorvente; qualquer setter aceita. Suficiente pro app.js bootar.
 function makeEl() {
   const base = {
-    classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
+    classList: { add() {}, remove() {}, toggle() {}, replace() {}, contains() { return false; } },
     style: {},
     appendChild(child) { return child; },
     remove() {},
@@ -63,7 +64,8 @@ function makeStorage(initial = {}) {
 // (limparia artilhariaPelada/backupPelada e invalidaria o cenário do teste)
 const HOJE = { dataPelada: new Date().toDateString() };
 
-function carregarApp({ fetchImpl, storageInitial = {} } = {}) {
+// domAusente: ids que getElementById devolve como null (tela sem o elemento)
+function carregarApp({ fetchImpl, storageInitial = {}, domAusente = [] } = {}) {
   const storage = makeStorage({ ...HOJE, ...storageInitial });
   const fetchCalls = [];
   const windowHandlers = {};
@@ -85,8 +87,9 @@ function carregarApp({ fetchImpl, storageInitial = {} } = {}) {
     localStorage: storage,
     navigator: {},
     document: {
-      getElementById: () => makeEl(),
+      getElementById: (id) => (domAusente.includes(id) ? null : makeEl()),
       createElement: () => makeEl(),
+      querySelectorAll: () => [],
       addEventListener() {},
       body: makeEl(),
       visibilityState: 'visible',
@@ -102,8 +105,10 @@ function carregarApp({ fetchImpl, storageInitial = {} } = {}) {
     navigator: { standalone: false },
   };
   const context = vm.createContext(world);
-  vm.runInContext(APP_JS, context, { filename: 'app.js' });
-  return { world, storage, fetchCalls, windowHandlers };
+  // Caminho absoluto: stack traces apontam pro arquivo e o V8 consegue
+  // atribuir cobertura ao app.js (node --experimental-test-coverage).
+  vm.runInContext(APP_JS, context, { filename: APP_JS_PATH });
+  return { world, storage, fetchCalls, windowHandlers, context };
 }
 
 const ESTADO_OK = (artilharia = []) => ({
@@ -915,4 +920,297 @@ test('flush concorrente (boot + online) não manda a fila em dobro', async () =>
   await Promise.all([world.lfSyncFlush(), world.lfSyncFlush()]);
   await esperarBoot();
   assert.equal(fetchCalls.filter((c) => c.url.endsWith('/presencas')).length, 1);
+});
+
+// --- Lógica pura fora dos handlers de UI (auditoria ub-mode, item 5) ---
+
+test('nomeConvidado: usa o digitado (sem espaços) ou numera "Player N"', () => {
+  const { world } = carregarApp();
+  assert.equal(world.nomeConvidado('  Thiago ', []), 'Thiago');
+  assert.equal(world.nomeConvidado('   ', [{ nome: 'Player 1' }, { nome: 'Râneer' }]), 'Player 2');
+  assert.equal(world.nomeConvidado('', []), 'Player 1');
+});
+
+test('proximoIdJogador: maior id numérico + 1, ignora slugs', () => {
+  const { world } = carregarApp();
+  assert.equal(world.proximoIdJogador([{ id: 3 }, { id: 56 }, { id: 'slug-velho' }, { id: '10' }]), 57);
+  assert.equal(world.proximoIdJogador([]), 1);
+});
+
+test('textoArtilharia: ranking com empate dividindo medalha', () => {
+  const { world } = carregarApp();
+  const texto = world.textoArtilharia({
+    45: { nome: 'Miné', gols: 8 }, 57: { nome: 'Thiago', gols: 7 },
+    4: { nome: 'Eduardo Bol.', gols: 4 }, 21: { nome: 'Daniel Par.', gols: 4 }, 16: { nome: 'Jorge', gols: 1 },
+  });
+  assert.equal(texto, [
+    '🏆 *RANKING DO SÁBADO* 🏆', '',
+    '🥇 Miné - 8 gol(s)', '🥈 Thiago - 7 gol(s)', '🥉 Eduardo Bol. - 4 gol(s)', '🥉 Daniel Par. - 4 gol(s)', '⚽ Jorge - 1 gol(s)',
+  ].join('\n'));
+  assert.equal(world.textoArtilharia({}), null);
+  assert.equal(world.textoArtilharia(null), null);
+});
+
+test('textoEscalacao: times em maiúsculas, luva pro goleiro', () => {
+  const { world } = carregarApp();
+  const texto = world.textoEscalacao([
+    { nome: 'Time 1', jogadores: [{ nome: 'Michel', posicao: 'goleiro' }, { nome: 'Râneer', posicao: 'linha' }] },
+    { nome: 'Time 2', jogadores: [{ nome: 'Jorge', posicao: 'linha' }] },
+  ]);
+  assert.equal(texto, '⚽ *SORTEIO DOS TIMES* ⚽\n\n*TIME 1*\n🧤 Michel\n🏃 Râneer\n\n*TIME 2*\n🏃 Jorge');
+});
+
+test('trocarJogadorEntreTimes: troca com quem sai e preenche vaga', () => {
+  const { world } = carregarApp();
+  const a = { id: 1 }; const b = { id: 2 }; const c = { id: 3 }; const d = { id: 4 };
+  const times = [{ jogadores: [a, b] }, { jogadores: [c] }];
+  world.trocarJogadorEntreTimes(times, 0, 2, c); // c entra no lugar do b; b vai pro time do c
+  assert.deepEqual(times.map((t) => t.jogadores.map((j) => j.id)), [[1, 3], [2]]);
+  world.trocarJogadorEntreTimes(times, 1, null, a); // vaga: a sai do time 0 e entra no 1
+  assert.deepEqual(times.map((t) => t.jogadores.map((j) => j.id)), [[3], [2, 1]]);
+  world.trocarJogadorEntreTimes(times, 0, null, d); // d vem de fora (atrasado)
+  assert.deepEqual(times.map((t) => t.jogadores.map((j) => j.id)), [[3, 4], [2, 1]]);
+});
+
+test('copiar artilharia: sem gol avisa; com gol copia o texto do ranking', async () => {
+  const { world, storage } = carregarApp();
+  const copiados = [];
+  world.navigator.clipboard = { writeText: async (t) => { copiados.push(t); } };
+  world.copiarArtilharia();
+  assert.ok(world._alerts.some((a) => /Nenhum gol/.test(a)));
+  storage.setItem('artilhariaPelada', JSON.stringify({ 1: { nome: 'Râneer', gols: 2 } }));
+  world.copiarArtilharia();
+  await esperarBoot();
+  assert.equal(copiados[0], '🏆 *RANKING DO SÁBADO* 🏆\n\n🥇 Râneer - 2 gol(s)');
+  assert.ok(world._alerts.some((a) => /Artilharia copiada/.test(a)));
+});
+
+test('copiar: clipboard recusado avisa que não deu', async () => {
+  const { world, storage } = carregarApp();
+  world.navigator.clipboard = { writeText: async () => { throw new Error('negado'); } };
+  storage.setItem('artilhariaPelada', JSON.stringify({ 1: { nome: 'Râneer', gols: 2 } }));
+  world.copiarArtilharia();
+  await esperarBoot();
+  assert.ok(world._alerts.some((a) => /Não foi possível copiar/.test(a)));
+});
+
+test('sorteio: menos de 5 presentes avisa e não sorteia; 10 presentes forma 2 times', () => {
+  const { world, storage } = carregarApp();
+  world.iniciarSorteio();
+  assert.ok(world._alerts.some((a) => /pelo menos 5/.test(a)));
+  [1, 2, 3, 4, 6, 7, 8, 9, 10, 11].forEach((id) => world.togglePresenca(id));
+  world.iniciarSorteio();
+  const times = JSON.parse(storage.getItem('backupPelada')).timesSorteadosGlobal;
+  assert.equal(times.length, 2);
+  assert.equal(times.flatMap((t) => t.jogadores).length, 10);
+});
+
+test('desfazer sorteio: cancelar mantém os times, confirmar apaga', () => {
+  const { world, storage } = carregarApp();
+  [1, 2, 3, 4, 6].forEach((id) => world.togglePresenca(id));
+  world.iniciarSorteio();
+  world._confirmAnswer = false;
+  world.desfazerSorteio();
+  assert.equal(JSON.parse(storage.getItem('backupPelada')).timesSorteadosGlobal.length, 1);
+  world._confirmAnswer = true;
+  world.desfazerSorteio();
+  assert.equal(JSON.parse(storage.getItem('backupPelada')).timesSorteadosGlobal.length, 0);
+});
+
+test('cronômetro: sem times não começa; com times alterna rodando/pausado', () => {
+  const { world, storage } = carregarApp();
+  world.toggleCronometro();
+  assert.ok(world._alerts.some((a) => /Sorteie os times primeiro/.test(a)));
+  [1, 2, 3, 4, 6].forEach((id) => world.togglePresenca(id));
+  world.iniciarSorteio();
+  let tick = null; let parados = 0;
+  world.setInterval = (fn) => { tick = fn; return 7; };
+  world.clearInterval = () => { parados++; };
+  world.toggleCronometro();
+  assert.ok(tick, 'começou a contar');
+  tick();
+  assert.equal(JSON.parse(storage.getItem('backupPelada')).tempoRestante, 420, 'backup salvo ao iniciar (antes do tick)');
+  world.toggleCronometro();
+  assert.equal(parados, 1, 'pausar para o intervalo');
+  assert.equal(JSON.parse(storage.getItem('backupPelada')).tempoRestante, 419, 'pausar salva o tempo');
+});
+
+test('descontarGol: um a menos, zero sai da lista, sem gol não mexe', () => {
+  const { world } = carregarApp();
+  const n = (v) => v; const menos = (v) => v - 1;
+  assert.deepEqual({ ...world.descontarGol({ 1: 2 }, 1, n, menos) }, { 1: 1 });
+  assert.deepEqual({ ...world.descontarGol({ 1: 1, 2: 1 }, 1, n, menos) }, { 2: 1 });
+  assert.deepEqual({ ...world.descontarGol({ 2: 1 }, 1, n, menos) }, { 2: 1 });
+  const original = { 1: { nome: 'R', gols: 1 } };
+  const r = world.descontarGol(original, 1, (a) => a.gols, (a) => ({ ...a, gols: a.gols - 1 }));
+  assert.equal(r[1], undefined);
+  assert.equal(original[1].gols, 1, 'não muta o original');
+});
+
+test('remover gol: índice inexistente e confirmação cancelada não mexem em nada', async () => {
+  const { world, storage } = carregarApp();
+  world.registrarGol(22, 'Felipe Teo.');
+  const antes = storage.getItem('backupPelada');
+  await world.removerGol(5);
+  world._confirmAnswer = false;
+  await world.removerGol(0);
+  assert.equal(storage.getItem('backupPelada'), antes);
+});
+
+test('adicionar convidado: cancelar não cria; nome vazio vira Player N; goleiro pelo confirm', () => {
+  const { world, storage } = carregarApp();
+  const total = () => JSON.parse(storage.getItem('backupPelada') || '{"jogadoresData":[]}').jogadoresData.length;
+  world.prompt = () => null;
+  world.adicionarPlayer();
+  assert.equal(storage.getItem('backupPelada'), null, 'cancelou');
+  world.prompt = () => '   ';
+  world._confirmAnswer = false; // Cancelar = goleiro
+  world.adicionarPlayer();
+  // renderLista ordena jogadoresData por nome: procura pelo maior id
+  const lista = JSON.parse(storage.getItem('backupPelada')).jogadoresData;
+  const novo = lista.reduce((a, j) => (j.id > a.id ? j : a));
+  assert.equal(novo.nome, 'Player 1');
+  assert.equal(novo.posicao, 'goleiro');
+  assert.equal(novo.presente, true);
+  assert.ok(total() > 50);
+});
+
+test('adicionar convidado com sync: servidor recusa (400) desfaz o cadastro', async () => {
+  const { world, storage } = carregarApp({
+    storageInitial: { lfSyncEndpoint: 'https://lf.exemplo.dev' },
+    fetchImpl: async (url) => (url.endsWith('/jogadores')
+      ? { ok: false, status: 400, text: async () => 'id inválido' }
+      : jsonResp(ESTADO_OK([]))),
+  });
+  await esperarBoot();
+  world.prompt = () => 'Thiago';
+  world.adicionarPlayer();
+  await esperarBoot();
+  const jogadores = JSON.parse(storage.getItem('backupPelada')).jogadoresData;
+  assert.ok(!jogadores.some((j) => j.nome === 'Thiago'), 'rollback local');
+  assert.ok(world._alerts.some((a) => a === 'Servidor rejeitou o cadastro: id inválido'));
+});
+
+test('modal de gol: bloqueia antes do cronômetro, com 3 gols e com tempo esgotado', () => {
+  const { world } = carregarApp({
+    storageInitial: {
+      backupPelada: JSON.stringify({ jogadoresData: [], timesSorteadosGlobal: [], tempoRestante: 420, golsPartidaAtual: 0, golsJogadorPartida: {}, golsFeedPartida: [] }),
+    },
+  });
+  world.abrirModalGol();
+  assert.ok(world._alerts.some((a) => /Inicie o cronômetro/.test(a)));
+  const comTempo = carregarApp({
+    storageInitial: {
+      backupPelada: JSON.stringify({ jogadoresData: [], timesSorteadosGlobal: [], tempoRestante: 300, golsPartidaAtual: 3, golsJogadorPartida: {}, golsFeedPartida: [] }),
+    },
+  });
+  comTempo.world.abrirModalGol();
+  assert.ok(comTempo.world._alerts.some((a) => /limite máximo de 3 gols/.test(a)));
+  const esgotado = carregarApp({
+    storageInitial: {
+      backupPelada: JSON.stringify({ jogadoresData: [], timesSorteadosGlobal: [], tempoRestante: 0, golsPartidaAtual: 0, golsJogadorPartida: {}, golsFeedPartida: [] }),
+    },
+  });
+  esgotado.world.abrirModalGol();
+  assert.equal(esgotado.world._alerts.length, 0, 'tempo zerado: não abre nem avisa');
+});
+
+test('modal de gol: abre com a lista em ordem alfabética', () => {
+  const { world } = carregarApp({
+    storageInitial: {
+      backupPelada: JSON.stringify({ jogadoresData: [{ id: 2, nome: 'Zé' }, { id: 1, nome: 'Álvaro' }], timesSorteadosGlobal: [], tempoRestante: 300, golsPartidaAtual: 0, golsJogadorPartida: {}, golsFeedPartida: [] }),
+    },
+  });
+  const criados = [];
+  world.document.createElement = () => { const el = makeEl(); criados.push(el); return el; };
+  world.abrirModalGol();
+  const nomes = criados.map((el) => el.innerHTML).filter((h) => h.includes('nome-jogador'));
+  assert.ok(nomes[0].includes('Álvaro') && nomes[1].includes('Zé'));
+});
+
+test('zerar cronômetro: rodando avisa pra pausar; parado pede confirmação', () => {
+  const { world, storage } = carregarApp({
+    storageInitial: {
+      backupPelada: JSON.stringify({ jogadoresData: [], timesSorteadosGlobal: [{ nome: 'Time 1', jogadores: [] }], tempoRestante: 100, golsPartidaAtual: 2, golsJogadorPartida: { 1: 2 }, golsFeedPartida: [] }),
+    },
+  });
+  world._confirmAnswer = false;
+  world.zerarCronometroManualmente();
+  world.salvarBackup();
+  assert.equal(JSON.parse(storage.getItem('backupPelada')).tempoRestante, 100, 'cancelou');
+  world._confirmAnswer = true;
+  world.zerarCronometroManualmente();
+  const b = JSON.parse(storage.getItem('backupPelada'));
+  assert.equal(b.tempoRestante, 420);
+  assert.equal(b.golsPartidaAtual, 0);
+  world.setInterval = () => 1;
+  world.toggleCronometro();
+  world.zerarCronometroManualmente();
+  assert.ok(world._alerts.some((a) => /Pause o cronômetro/.test(a)));
+});
+
+test('trocar no sorteio: modal lista só quem está fora do time e troca ao escolher', () => {
+  const { world, storage } = carregarApp();
+  [1, 2, 3, 4, 6, 7].forEach((id) => world.togglePresenca(id));
+  world.iniciarSorteio();
+  const times = JSON.parse(storage.getItem('backupPelada')).timesSorteadosGlobal;
+  const time0 = times[0].jogadores.map((j) => j.id);
+  const fora = [1, 2, 3, 4, 6, 7].find((id) => !time0.includes(id));
+  world.abrirModalSubSorteio(0, time0[0]);
+  world.efetivarSubSorteio(fora);
+  const depois = JSON.parse(storage.getItem('backupPelada')).timesSorteadosGlobal[0].jogadores.map((j) => j.id);
+  assert.ok(depois.includes(fora));
+  assert.ok(!depois.includes(time0[0]));
+});
+
+test('restaurar backup: times sorteados voltam e o cronômetro nunca volta rodando', () => {
+  const { world, storage } = carregarApp({
+    storageInitial: {
+      backupPelada: JSON.stringify({ jogadoresData: [{ id: 1, nome: 'R', presente: true }], timesSorteadosGlobal: [{ nome: 'Time 1', jogadores: [] }], golsPartidaAtual: 1, golsJogadorPartida: {}, golsFeedPartida: [] }),
+    },
+  });
+  world.salvarBackup();
+  const b = JSON.parse(storage.getItem('backupPelada'));
+  assert.equal(b.tempoRestante, 420, 'sem tempo salvo, começa do total');
+  assert.equal(b.timesSorteadosGlobal.length, 1);
+  let iniciou = false;
+  world.setInterval = () => { iniciou = true; return 1; };
+  world.toggleCronometro();
+  assert.equal(iniciou, true, 'primeiro toque INICIA (não estava rodando)');
+});
+
+test('vista da artilharia: alterna entre Hoje e Geral sem quebrar sem os botões', () => {
+  const { world } = carregarApp();
+  world.alternarVistaArtilharia('geral');
+  world.alternarVistaArtilharia('hoje');
+  const semBotoes = carregarApp({ domAusente: ['btn-artilharia-hoje'] });
+  semBotoes.world.alternarVistaArtilharia('geral');
+});
+
+test('editar posição: jogador desconhecido ou modal ausente não abre', async () => {
+  const { world, storage, fetchCalls } = carregarApp();
+  world.abrirModalEditarPosicao(9999);
+  await world.salvarNovaPosicao();
+  assert.equal(storage.getItem('backupPelada'), null, 'nada pra salvar');
+  const semModal = carregarApp({ domAusente: ['modal-editar-posicao', 'posicao-goleiro', 'posicao-linha', 'nome-atleta-editar-posicao'] });
+  semModal.world.abrirModalEditarPosicao(1);
+  await semModal.world.salvarNovaPosicao(); // sem radio marcado: linha
+  const r = JSON.parse(semModal.storage.getItem('backupPelada')).jogadoresData.find((j) => j.id === 1);
+  assert.equal(r.posicao, 'linha');
+  assert.equal(fetchCalls.length, 0, 'sync desligado: só local');
+});
+
+test('artilharia: medalhas por colocação e estatísticas só quando vierem', () => {
+  const { world } = carregarApp();
+  const criados = [];
+  world.document.createElement = () => { const el = makeEl(); criados.push(el); return el; };
+  world.renderListaArtilheiros([
+    { nome: 'A', gols: 4, partidas: 2, presencas: 4 }, { nome: 'B', gols: 3 }, { nome: 'C', gols: 2 },
+    { nome: 'D', gols: 1, partidas: 1, presencas: 0 },
+  ]);
+  const html = criados.map((el) => el.innerHTML);
+  assert.ok(html[0].includes('text-yellow-500') && html[0].includes('2J · 4x · 1.00/j'));
+  assert.ok(html[1].includes('text-zinc-300') && !html[1].includes('/j'));
+  assert.ok(html[2].includes('text-amber-600'));
+  assert.ok(html[3].includes('4º') && html[3].includes('0.00/j'));
 });
